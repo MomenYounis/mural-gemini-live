@@ -15,6 +15,22 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MuralViewModelTest {
+    @Test fun extendedReviewDeadlineIsScopedToPersonalGemini() {
+        assertEquals(90_000L, learningReviewTimeoutMillis(chat.mural.core.AIVendor.GEMINI, chat.mural.core.ConversationProvider.PERSONAL_KEY))
+        assertEquals(45_000L, learningReviewTimeoutMillis(chat.mural.core.AIVendor.OPENAI, chat.mural.core.ConversationProvider.PERSONAL_KEY))
+        assertEquals(45_000L, learningReviewTimeoutMillis(chat.mural.core.AIVendor.OPENAI, chat.mural.core.ConversationProvider.HOSTED_MINUTES))
+        assertEquals(45_000L, learningReviewTimeoutMillis(chat.mural.core.AIVendor.GEMINI, chat.mural.core.ConversationProvider.HOSTED_MINUTES))
+    }
+    @Test fun geminiInvalidExpiredAndQuotaErrorsStayVendorScopedAndLocalized() {
+        for (reason in listOf("API_KEY_INVALID", "API_KEY_EXPIRED")) {
+            val error = chat.mural.network.GeminiException.Http(400, reason)
+            assertTrue(errorNeedsKeySetup(error))
+            assertEquals(R.string.gemini_authentication, errorMessageRes(error))
+        }
+        assertEquals(R.string.gemini_quota, errorMessageRes(chat.mural.network.GeminiException.Http(429)))
+        assertEquals(R.string.gemini_search_unavailable, errorMessageRes(chat.mural.network.GeminiException.SearchUnavailable))
+        assertFalse(errorNeedsKeySetup(chat.mural.network.GeminiException.SearchUnavailable))
+    }
     @Test fun importedUnfinishedHistoryCannotLookLikeALocalInterruptedSession() {
         val partial = SessionRecord(languageID = "es", startedAt = 800_000_000.0).apply {
             append(Fragment(speaker = Speaker.user, text = "la radio", startMS = 0, endMS = 1_000))

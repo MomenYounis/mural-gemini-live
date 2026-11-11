@@ -22,8 +22,16 @@ interface TeachingClient {
     }
 }
 
-data class LiveSessionRequest(val sdp: String, val instructions: String, val history: JsonArray = JsonArray(emptyList()),
+sealed interface LiveOffer {
+    data class WebRTC(val sdp: String) : LiveOffer { override fun toString() = "WebRTC([redacted])" }
+    data object NativePCM : LiveOffer
+}
+
+data class LiveSessionRequest(val offer: LiveOffer, val instructions: String, val history: JsonArray = JsonArray(emptyList()),
     val language: String? = null, val requestID: String = UUID.randomUUID().toString(), val requestedMilliseconds: Long? = null) {
+    constructor(sdp: String, instructions: String, history: JsonArray = JsonArray(emptyList()), language: String? = null) :
+        this(LiveOffer.WebRTC(sdp), instructions, history, language)
+    val sdp: String get() = (offer as? LiveOffer.WebRTC)?.sdp ?: error("This provider requires WebRTC")
     override fun toString() = "LiveSessionRequest([redacted])"
 }
 
@@ -37,7 +45,14 @@ interface LiveSessionLease {
     suspend fun requestClose()
 }
 
-data class LiveSessionConnection(val sdp: String, val providerSessionID: String?, val lease: LiveSessionLease? = null) {
+sealed interface LiveConnection {
+    data class WebRTC(val sdp: String) : LiveConnection { override fun toString() = "WebRTC([redacted])" }
+    data object NativePCM : LiveConnection
+}
+
+data class LiveSessionConnection(val connection: LiveConnection, val providerSessionID: String?, val lease: LiveSessionLease? = null) {
+    constructor(sdp: String, providerSessionID: String?, lease: LiveSessionLease? = null) : this(LiveConnection.WebRTC(sdp), providerSessionID, lease)
+    val sdp: String get() = (connection as? LiveConnection.WebRTC)?.sdp ?: error("This connection uses native PCM")
     override fun toString() = "LiveSessionConnection([redacted])"
 }
 

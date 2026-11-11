@@ -44,6 +44,28 @@ class LearningRepositoryTest {
         assertEquals(restarted.archive, ArchiveCodec.decode(publicExport))
     }
 
+    @Test fun multiplePassageTicketsForOneConversationSurviveRestartWithoutLosingTheirAttemptCounts() = withRepository { repository, context ->
+        val record = SessionRecord(languageID = "en", endedAt = nowSeconds()).apply {
+            append(Fragment(speaker = Speaker.user, text = "I like tea.", startMS = 0, endMS = 1_000))
+            append(Fragment(speaker = Speaker.user, text = "I enjoy coffee.", startMS = 5_000, endMS = 6_000, typed = true))
+        }
+        val tickets = FinalAssessmentRecovery.enqueue(record, emptyList()).mapIndexed { index, ticket ->
+            ticket.copy(attempts = index + 1, lastAttemptAt = nowSeconds() - 120)
+        }
+        assertEquals(2, tickets.size)
+        assertEquals(1, tickets.map { it.sessionID }.distinct().size)
+        repository.save(LearningSnapshot(Archive(sessions = mutableListOf(record)), tickets))
+        val restarted = LearningRepository(context).load()
+        assertEquals(tickets, restarted.finalAssessments)
+        assertEquals(listOf(1, 2), restarted.finalAssessments.map { it.attempts })
+        val publicExport = ArchiveCodec.encode(restarted.archive)
+        assertFalse(publicExport.contains("androidFinalAssessments"))
+        assertEquals(restarted.archive, ArchiveCodec.decode(publicExport))
+
+        repository.save(restarted.copy(finalAssessments = tickets + tickets.first()))
+        assertThrows(IllegalArgumentException::class.java) { LearningRepository(context).load() }
+    }
+
     @Test fun retryCountsSurviveRestartAndOldArchivesRemainReadable() = withRepository { repository, context ->
         val record = SessionRecord(languageID = "fr", endedAt = nowSeconds()).apply {
             append(Fragment(speaker = Speaker.user, text = "la radio", startMS = 0, endMS = 1_000))

@@ -215,6 +215,8 @@ class LiveTransport(
         emitZeroLevels(detached)
     }
 
+    internal suspend fun awaitDisconnected() = withContext(AUDIO_DISPATCHER) { drainRetiredAttempts() }
+
     private fun detachAttempt(): Long = synchronized(lock) {
         activeAttempt?.let(retiredAttempts::addLast)
         activeAttempt = null

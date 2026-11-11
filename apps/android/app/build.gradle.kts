@@ -19,6 +19,12 @@ require(muralMinutePurchases in listOf("false", "true")) { "mural.minutePurchase
 require(muralMinuteEnvironment in listOf("test", "live")) { "mural.minutePurchaseEnvironment must be test or live" }
 val muralVersionCode = muralConfiguration("mural.versionCode").ifBlank { "15" }.toIntOrNull()
 require(muralVersionCode != null && muralVersionCode in 12..2_100_000_000) { "mural.versionCode must be a supported positive Android version code" }
+val geminiLiveModel = muralConfiguration("mural.geminiLiveModel").ifBlank { "gemini-3.8-live" }
+val geminiLiveVoice = muralConfiguration("mural.geminiLiveVoice").ifBlank { "Kore" }
+val geminiTeachingModel = muralConfiguration("mural.geminiTeachingModel").ifBlank { "gemini-3.8-flash" }
+require(Regex("gemini-[a-z0-9.-]{1,80}").matches(geminiLiveModel) &&
+    Regex("[A-Za-z]{1,40}").matches(geminiLiveVoice) &&
+    Regex("gemini-[a-z0-9.-]{1,80}").matches(geminiTeachingModel)) { "Invalid Gemini model or voice identifier" }
 val muralApiOrigin = muralConfiguration("mural.apiOrigin")
 if (muralVersionCode in listOf(12, 14)) {
     require(muralMinutePurchases == "true" && muralPurchaseChannel == "play" && muralMinuteEnvironment == "test" &&
@@ -40,6 +46,9 @@ android {
         versionCode = muralVersionCode
         versionName = "0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "GEMINI_LIVE_MODEL", buildString(geminiLiveModel))
+        buildConfigField("String", "GEMINI_LIVE_VOICE", buildString(geminiLiveVoice))
+        buildConfigField("String", "GEMINI_TEACHING_MODEL", buildString(geminiTeachingModel))
         buildConfigField("String", "MANAGED_API_ORIGIN", buildString(muralApiOrigin))
         buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID", buildString(muralConfiguration("mural.googleServerClientID")))
         buildConfigField("boolean", "MINUTE_PURCHASES_ENABLED", muralMinutePurchases)
@@ -113,4 +122,15 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     "uiTestImplementation"("androidx.compose.ui:ui-test-manifest")
+}
+
+// This prepares an explicitly launched console check; ordinary tests never call a provider.
+tasks.register("prepareGeminiSmokeCheck") {
+    dependsOn("compileDebugUnitTestKotlin")
+    val destination = layout.buildDirectory.file("gemini-smoke-check.classpath")
+    outputs.file(destination)
+    doLast {
+        val unitTest = tasks.named<Test>("testDebugUnitTest").get()
+        destination.get().asFile.writeText(unitTest.classpath.asPath)
+    }
 }

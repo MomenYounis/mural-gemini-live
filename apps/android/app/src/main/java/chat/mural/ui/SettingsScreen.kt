@@ -64,6 +64,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
 import chat.mural.core.LanguageRegistry
+import chat.mural.core.AIVendor
 import chat.mural.core.MeaningLanguages
 import chat.mural.core.MinuteBalanceTime
 import chat.mural.core.Passage
@@ -71,6 +72,8 @@ import chat.mural.core.SessionRecord
 import chat.mural.core.Speaker
 import chat.mural.core.UsageSummary
 import chat.mural.core.ProviderFailureKind
+import chat.mural.network.TeachingModelOption
+import chat.mural.network.TeachingProvider
 import kotlinx.coroutines.launch
 
 @Composable
@@ -88,6 +91,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     var history by rememberSaveable { mutableStateOf(false) }
     var transcript by remember { mutableStateOf<SessionRecord?>(null) }
     var deleteSession by remember { mutableStateOf<SessionRecord?>(null) }
+    var teachingKeyDialogProvider by remember { mutableStateOf<TeachingProvider?>(null) }
+    var deleteTeachingKeyProvider by remember { mutableStateOf<TeachingProvider?>(null) }
+    var showTeachingModelPicker by remember { mutableStateOf(false) }
     var sourceDialog by rememberSaveable { mutableStateOf(false) }
     var pendingSource by rememberSaveable { mutableStateOf<chat.mural.core.ConversationProvider?>(null) }
     var switchBalance by remember { mutableStateOf<Long?>(null) }
@@ -99,6 +105,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         if (focusAdvanced) listState.scrollToItem(4)
     }
     val prefs = vm.archive.preferences
+    val usesGemini = vm.aiVendor == AIVendor.GEMINI
+    val keyTitle = stringResource(if (usesGemini) R.string.settings_gemini_key else R.string.settings_openai_key)
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val version = remember(context) { context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty() }
@@ -106,16 +114,18 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     fun chooseSource(id: String) {
         if (vm.isRunning) return
         val choice = chat.mural.core.ConversationProvider.valueOf(id)
-        if (choice == vm.conversationProvider) return
-        if (choice == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey) {
-            keyDialogUseAfterSave = true; keyDialog = true
-        } else {
-            if (choice == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
-                checkingSwitch = true
-                switchBalance = null
+        if (choice == vm.conversationProvider) {
+            if (choice == chat.mural.core.ConversationProvider.PERSONAL_KEY && !vm.hasKey) {
+                keyDialogUseAfterSave = true; keyDialog = true
             }
-            switchTicket++; pendingSource = choice; sourceDialog = true
+            return
         }
+        if (choice == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
+            checkingSwitch = true
+            switchBalance = null
+        }
+        // Selecting personal funding must not require an OpenAI key before Gemini can be chosen.
+        switchTicket++; pendingSource = choice; sourceDialog = true
     }
     androidx.compose.runtime.LaunchedEffect(sourceDialog, pendingSource) {
         if (sourceDialog && pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES) {
@@ -127,7 +137,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         val title = when (page) {
             "interests" -> stringResource(R.string.settings_interests_label)
             "data" -> stringResource(R.string.settings_learning_data)
-            "key" -> stringResource(R.string.settings_openai_key)
+            "key" -> keyTitle
             "about" -> stringResource(R.string.settings_about)
             else -> stringResource(R.string.settings_navigation_title)
         }
@@ -195,18 +205,28 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         SettingsGroup(stringResource(R.string.settings_advanced)) {
                             SettingsChoiceRow(stringResource(R.string.settings_conversation_access),
                                 stringResource(if (vm.conversationProvider == chat.mural.core.ConversationProvider.HOSTED_MINUTES)
-                                    R.string.account_mural_minutes else R.string.settings_my_openai_key),
+                                    R.string.settings_hosted_openai else R.string.settings_my_openai_key),
                                 vm.conversationProvider.name,
-                                listOf(chat.mural.core.ConversationProvider.HOSTED_MINUTES.name to stringResource(R.string.account_mural_minutes),
+                                listOf(chat.mural.core.ConversationProvider.HOSTED_MINUTES.name to stringResource(R.string.settings_hosted_openai),
                                     chat.mural.core.ConversationProvider.PERSONAL_KEY.name to stringResource(R.string.settings_my_openai_key)),
                                 "settings-conversation-access", !vm.isRunning, ::chooseSource)
                             if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
+                                SettingsDivider()
+                                SettingsChoiceRow(stringResource(R.string.settings_ai_vendor),
+                                    stringResource(if (usesGemini) R.string.settings_vendor_gemini else R.string.settings_vendor_openai),
+                                    vm.aiVendor.name,
+                                    listOf(AIVendor.GEMINI.name to stringResource(R.string.settings_vendor_gemini),
+                                        AIVendor.OPENAI.name to stringResource(R.string.settings_vendor_openai)),
+                                    "settings-ai-vendor", !vm.isRunning) { vm.selectAIVendor(AIVendor.valueOf(it)) }
                                 Text(stringResource(R.string.settings_personal_key_note), style = MaterialTheme.typography.bodySmall,
+                                    color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                            } else {
+                                Text(stringResource(R.string.settings_gemini_hosted_unavailable), style = MaterialTheme.typography.bodySmall,
                                     color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                             }
                             if (vm.hasKey || vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
                                 SettingsDivider()
-                                SettingsRow(stringResource(R.string.settings_openai_key),
+                                SettingsRow(keyTitle,
                                     stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required),
                                     symbol = SettingsSymbol.KEY, chevron = true, modifier = Modifier.testTag("advanced-api-key"),
                                     onClick = { page = "key" })
@@ -215,6 +235,64 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                 SettingsDivider()
                                 SettingsRow(stringResource(R.string.settings_provider_issue), issueLabel(issue, context),
                                     chevron = true, modifier = Modifier.testTag("advanced-provider-issue"), onClick = { page = "key" })
+                            }
+                        }
+                    }
+                    item {
+                        SettingsGroup(
+                            title = "ANALYSIS & HELPER AI (FLASHCARDS & MEANING)",
+                            footer = "Choose the AI provider and model used for Post-Session Mistake Reports & Flashcards, live Meaning translation, A little help, and Assessments. Live voice stays on Gemini Live.",
+                        ) {
+                            SettingsChoiceRow(
+                                title = "Analysis Provider",
+                                value = vm.teachingProvider.shortName,
+                                selected = vm.teachingProvider.id,
+                                options = TeachingProvider.entries.map { it.id to it.displayName },
+                                tag = "settings-teaching-provider",
+                                enabled = !vm.isRunning,
+                            ) { selectedId ->
+                                vm.selectTeachingProvider(TeachingProvider.fromId(selectedId))
+                            }
+                            SettingsDivider()
+                            SettingsRow(
+                                title = "Active Model",
+                                value = vm.activeTeachingModelLabel,
+                                chevron = vm.teachingProvider != TeachingProvider.DEFAULT_GEMINI,
+                                enabled = vm.teachingProvider != TeachingProvider.DEFAULT_GEMINI,
+                                modifier = Modifier.testTag("settings-teaching-model"),
+                                onClick = {
+                                    if (vm.teachingProvider != TeachingProvider.DEFAULT_GEMINI) {
+                                        vm.refreshTeachingModels(vm.teachingProvider)
+                                        showTeachingModelPicker = true
+                                    }
+                                },
+                            )
+                            if (vm.teachingProvider != TeachingProvider.DEFAULT_GEMINI) {
+                                val activeProvider = vm.teachingProvider
+                                val hasProviderKey = vm.hasTeachingKey(activeProvider)
+                                SettingsDivider()
+                                SettingsRow(
+                                    title = "${activeProvider.shortName} API Key",
+                                    value = stringResource(if (hasProviderKey) R.string.settings_key_saved_short else R.string.settings_key_required),
+                                    symbol = SettingsSymbol.KEY,
+                                    chevron = true,
+                                    modifier = Modifier.testTag("settings-teaching-api-key"),
+                                    onClick = { teachingKeyDialogProvider = activeProvider },
+                                )
+                                SettingsDivider()
+                                SettingsRow(
+                                    title = "Get ${activeProvider.shortName} API Key",
+                                    chevron = true,
+                                    onClick = { open(activeProvider.keysUrl) },
+                                )
+                                if (hasProviderKey) {
+                                    SettingsDivider()
+                                    SettingsRow(
+                                        title = "Remove ${activeProvider.shortName} Key",
+                                        tint = MuralColors.Red,
+                                        onClick = { deleteTeachingKeyProvider = activeProvider },
+                                    )
+                                }
                             }
                         }
                     }
@@ -263,8 +341,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                     }
                 }
                 "key" -> item {
-                    SettingsGroup(footer = stringResource(R.string.settings_key_owner_footer)) {
-                        SettingsRow(stringResource(R.string.settings_openai_key),
+                    SettingsGroup(footer = stringResource(if (usesGemini) R.string.settings_gemini_key_owner_footer else R.string.settings_key_owner_footer)) {
+                        SettingsRow(keyTitle,
                             stringResource(if (vm.hasKey) R.string.settings_key_saved_short else R.string.settings_key_required))
                         SettingsDivider()
                         SettingsRow(stringResource(if (vm.hasKey) R.string.settings_replace_key else R.string.settings_save_key),
@@ -273,7 +351,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                 keyDialog = true
                             })
                         SettingsDivider()
-                        SettingsRow(stringResource(R.string.settings_open_api_keys), onClick = { open("https://platform.openai.com/api-keys") })
+                        SettingsRow(stringResource(R.string.settings_open_api_keys), onClick = {
+                            open(if (usesGemini) "https://aistudio.google.com/api-keys" else "https://platform.openai.com/api-keys")
+                        })
                         if (vm.hasKey) {
                             SettingsDivider()
                             SettingsRow(stringResource(R.string.settings_remove_key), enabled = !vm.isRunning,
@@ -290,11 +370,15 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         }
                         SettingsDivider()
                         SettingsRow(stringResource(R.string.settings_usage_billing_link),
-                            onClick = { open("https://platform.openai.com/usage") })
+                            onClick = { open(if (usesGemini) "https://aistudio.google.com/usage" else "https://platform.openai.com/usage") })
                         if (vm.conversationProvider == chat.mural.core.ConversationProvider.PERSONAL_KEY) {
                             val usage = UsageSummary.of(vm.archive.sessions)
                             SettingsDivider()
                             SettingsRow(stringResource(R.string.settings_voice_time_label), usage.voiceTime)
+                            SettingsDivider()
+                            val elapsedSeconds = vm.geminiElapsedSeconds.toLong().coerceAtLeast(0)
+                            SettingsRow(stringResource(R.string.settings_gemini_elapsed_label),
+                                stringResource(R.string.settings_elapsed_format, elapsedSeconds / 60, elapsedSeconds % 60))
                             SettingsDivider()
                             SettingsRow(stringResource(R.string.settings_search_calls_label), usage.searchCalls.toString())
                             Text(stringResource(R.string.settings_recorded_here), style = MaterialTheme.typography.bodySmall,
@@ -313,6 +397,9 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         SettingsDivider()
                         SettingsRow(stringResource(R.string.settings_openai_data_controls),
                             onClick = { open("https://developers.openai.com/api/docs/guides/your-data") })
+                        SettingsDivider()
+                        SettingsRow(stringResource(R.string.settings_google_data_controls),
+                            onClick = { open("https://ai.google.dev/gemini-api/docs/zdr") })
                         Text(stringResource(R.string.settings_data_use_footer), style = MaterialTheme.typography.bodySmall,
                             color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         SettingsDivider()
@@ -364,6 +451,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                     checkingSwitch = false
                     switchBalance = latest
                     if (latest != null && latest > 0) {
+                        // The confirmation names both changes: provider and funding stay separate preferences.
+                        vm.selectAIVendor(AIVendor.OPENAI)
                         vm.selectConversationProvider(chat.mural.core.ConversationProvider.HOSTED_MINUTES)
                         sourceDialog = false
                     }
@@ -373,7 +462,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         }, modifier = Modifier.testTag("settings-source-confirm"), enabled = !vm.isRunning && (pendingSource != chat.mural.core.ConversationProvider.HOSTED_MINUTES ||
             (!checkingSwitch && switchBalance != null && switchBalance!! > 0))) {
             Text(stringResource(if (pendingSource == chat.mural.core.ConversationProvider.HOSTED_MINUTES)
-                R.string.account_mural_minutes else R.string.settings_my_openai_key))
+                R.string.settings_confirm_hosted_openai else R.string.settings_my_openai_key))
         } }, dismissButton = { MuralTextButton(onClick = { switchTicket++; sourceDialog = false }) { Text(stringResource(R.string.common_cancel)) } })
     if (keyDialog) KeyDialog(vm, keyDialogUseAfterSave, onDismiss = { keyDialog = false })
     if (notices) NoticesDialog(onDismiss = { notices = false })
@@ -406,6 +495,35 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
         vm.deleteSession(session.id); deleteSession = null
     }, { deleteSession = null }) }
     transcript?.let { TranscriptDialog(vm, it, onDismiss = { transcript = null }) }
+    teachingKeyDialogProvider?.let { provider ->
+        TeachingKeyDialog(
+            provider = provider,
+            onSave = { rawKey ->
+                vm.saveTeachingKey(provider, rawKey)
+                teachingKeyDialogProvider = null
+            },
+            onDismiss = { teachingKeyDialogProvider = null },
+        )
+    }
+    deleteTeachingKeyProvider?.let { provider ->
+        ConfirmDialog(
+            title = "Remove ${provider.shortName} Key",
+            message = "Remove your saved ${provider.shortName} API key from this device?",
+            confirm = stringResource(R.string.common_delete),
+            onConfirm = {
+                vm.deleteTeachingKey(provider)
+                deleteTeachingKeyProvider = null
+            },
+            onDismiss = { deleteTeachingKeyProvider = null },
+        )
+    }
+    if (showTeachingModelPicker && vm.teachingProvider != TeachingProvider.DEFAULT_GEMINI) {
+        TeachingModelPickerDialog(
+            vm = vm,
+            provider = vm.teachingProvider,
+            onDismiss = { showTeachingModelPicker = false },
+        )
+    }
 }
 
 private fun issueLabel(kind: ProviderFailureKind, context: android.content.Context): String = context.getString(when (kind) {
@@ -460,7 +578,8 @@ private fun KeyDialog(vm: MuralViewModel, useAfterSave: Boolean, onDismiss: () -
         }
         Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Surface) {
             Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                Text(stringResource(R.string.settings_key_dialog_title), style = MaterialTheme.typography.headlineMedium)
+                Text(stringResource(if (vm.aiVendor == AIVendor.GEMINI) R.string.settings_gemini_key else R.string.settings_openai_key),
+                    style = MaterialTheme.typography.headlineMedium)
                 Text(stringResource(R.string.settings_key_dialog_note), color = MuralColors.Secondary)
                 MuralTextField(
                     key,
@@ -492,6 +611,165 @@ private fun ConfirmDialog(title: String, message: String, confirm: String, onCon
 }
 
 @Composable
+private fun TeachingKeyDialog(
+    provider: TeachingProvider,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var key by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = { key = ""; onDismiss() }) {
+        val view = LocalView.current
+        DisposableEffect(view) {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            val wasSecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE)?.let { it != 0 } ?: false
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            onDispose { if (!wasSecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+        }
+        Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Surface) {
+            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                Text("${provider.shortName} API Key", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Your ${provider.shortName} key is encrypted in Android Keystore and used for Post-Session Mistake Reports & Flashcards, Meaning translation, A little help, and Assessments.",
+                    color = MuralColors.Secondary,
+                )
+                MuralTextField(
+                    key,
+                    { key = it.take(500) },
+                    Modifier.fillMaxWidth().testTag("teaching-api-key-input").semantics { password() },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    label = { Text("${provider.shortName} API Key") },
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    MuralTextButton(onClick = { key = ""; onDismiss() }) { Text(stringResource(R.string.common_cancel)) }
+                    Button(
+                        onClick = { onSave(key.trim()); key = "" },
+                        enabled = key.trim().length >= 20,
+                        modifier = Modifier.testTag("save-teaching-api-key"),
+                    ) { Text(stringResource(R.string.common_save)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TeachingModelPickerDialog(
+    vm: MuralViewModel,
+    provider: TeachingProvider,
+    onDismiss: () -> Unit,
+) {
+    val currentModel = vm.activeTeachingModelLabel
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    var customModelInput by rememberSaveable(currentModel) { mutableStateOf(currentModel) }
+    val allModels = vm.availableTeachingModels
+    val filteredModels = remember(allModels, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) allModels
+        else allModels.filter {
+            it.id.contains(q, ignoreCase = true) ||
+                it.name.contains(q, ignoreCase = true) ||
+                it.description.contains(q, ignoreCase = true)
+        }
+    }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp).testTag("teaching-model-picker-dialog"),
+            shape = RoundedCornerShape(28.dp),
+            color = MuralColors.Cream,
+        ) {
+            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${provider.shortName} Models", style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            if (vm.loadingTeachingModels) "Fetching live models from ${provider.shortName}..."
+                            else "${allModels.size} models available · Select or enter any model ID",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MuralColors.Secondary,
+                        )
+                    }
+                    MuralTextButton(onClick = { vm.refreshTeachingModels(provider) }) {
+                        Text("Refresh")
+                    }
+                }
+
+                MuralTextField(
+                    value = customModelInput,
+                    onValueChange = { customModelInput = it.take(160) },
+                    modifier = Modifier.fillMaxWidth().testTag("custom-teaching-model-input"),
+                    singleLine = true,
+                    label = { Text("Selected / Custom Model ID") },
+                )
+
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    MuralTextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
+                    Button(
+                        onClick = {
+                            vm.selectTeachingModel(provider, customModelInput)
+                            onDismiss()
+                        },
+                        enabled = customModelInput.isNotBlank(),
+                        modifier = Modifier.testTag("confirm-teaching-model"),
+                    ) {
+                        Text("Use Model")
+                    }
+                }
+
+                MuralTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it.take(100) },
+                    modifier = Modifier.fillMaxWidth().testTag("search-teaching-models-input"),
+                    singleLine = true,
+                    label = { Text("Search ${provider.shortName} models...") },
+                )
+
+                LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(filteredModels, key = { it.id }) { option ->
+                        val isSelected = option.id == currentModel
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    vm.selectTeachingModel(provider, option.id)
+                                    onDismiss()
+                                },
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (isSelected) MuralColors.Butter else MuralColors.Surface,
+                        ) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text(
+                                    option.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                )
+                                Text(
+                                    option.id,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MuralColors.Secondary,
+                                )
+                                if (option.description.isNotBlank()) {
+                                    Text(
+                                        option.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MuralColors.Secondary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun TranscriptDialog(vm: MuralViewModel, session: SessionRecord, onDismiss: () -> Unit) {
     var correcting by remember { mutableStateOf<Passage?>(null) }
     val liveSession = vm.archive.sessions.firstOrNull { it.id == session.id }
@@ -503,6 +781,19 @@ fun TranscriptDialog(vm: MuralViewModel, session: SessionRecord, onDismiss: () -
                 item {
                     Text(liveSession.title, style = MaterialTheme.typography.headlineMedium)
                     Text("${formatDate(liveSession.startedAt)} · ${pluralStringResource(R.plurals.history_passages_count, liveSession.passages.size, liveSession.passages.size)}", color = MuralColors.Secondary)
+                }
+                if (!vm.isRunning) {
+                    item {
+                        Button(
+                            onClick = {
+                                onDismiss()
+                                vm.openReportForSession(liveSession.id)
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("transcript-open-session-report"),
+                        ) {
+                            Text("View Mistake Report & Flashcards")
+                        }
+                    }
                 }
                 items(liveSession.passages, key = { it.id }) { passage ->
                     Column(

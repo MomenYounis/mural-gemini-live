@@ -233,6 +233,13 @@ fun MuralApp(
                 }
             }
 
+            if (vm.showSessionReport) {
+                PostSessionReportDialog(
+                    vm = vm,
+                    onDismiss = vm::dismissSessionReport,
+                )
+            }
+
             vm.error?.let { message ->
                 AlertDialog(
                     onDismissRequest = vm::dismissError,

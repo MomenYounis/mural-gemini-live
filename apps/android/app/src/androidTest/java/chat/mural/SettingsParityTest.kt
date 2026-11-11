@@ -6,6 +6,8 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import chat.mural.core.Preferences
+import chat.mural.core.AIVendor
+import chat.mural.core.ConversationProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import org.junit.After
@@ -21,16 +23,25 @@ class SettingsParityTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private lateinit var vm: MuralViewModel
     private var original: Preferences? = null
+    private var originalProvider: ConversationProvider? = null
+    private var originalVendor: AIVendor? = null
 
     @Before fun setup() {
         vm = compose.awaitHistoryLoaded()
         compose.runOnIdle {
             original = vm.archive.preferences.copy()
+            originalProvider = vm.conversationProvider
+            originalVendor = vm.aiVendor
             vm.updatePreferences(original!!.copy(hasOnboarded = true, learningLanguageID = "es", meaningVisible = true, meaningLanguage = "English"))
         }
         compose.onNodeWithTag("tab-settings").performClick()
     }
-    @After fun restore() { original?.let { prefs -> compose.runOnIdle { vm.updatePreferences(prefs) } } }
+    @After fun restore() { original?.let { prefs -> compose.runOnIdle {
+        vm.updatePreferences(prefs)
+        vm.selectConversationProvider(ConversationProvider.PERSONAL_KEY)
+        originalVendor?.let(vm::selectAIVendor)
+        originalProvider?.let(vm::selectConversationProvider)
+    } } }
 
     private fun capture(name: String) {
         compose.waitForIdle()
@@ -52,6 +63,10 @@ class SettingsParityTest {
     }
 
     @Test fun groupedSettingsKeepKeyAdvancedAndRestoreSubtitleLanguageAndMinutePreferences() {
+        compose.runOnIdle {
+            vm.selectAIVendor(AIVendor.OPENAI)
+            vm.selectConversationProvider(ConversationProvider.HOSTED_MINUTES)
+        }
         compose.onNodeWithText(compose.activity.getString(R.string.settings_navigation_title)).assertIsDisplayed()
         compose.onNodeWithTag("settings-meaning-visible").assertIsOn()
         compose.onNodeWithTag("api-key-input").assertDoesNotExist()
@@ -73,7 +88,8 @@ class SettingsParityTest {
         settings.performScrollToNode(hasTestTag("settings-conversation-access"))
         compose.onNodeWithTag("settings-conversation-access").performClick()
         compose.onNodeWithTag("settings-conversation-access-PERSONAL_KEY").performClick()
-        compose.onNodeWithTag("api-key-input").assertIsDisplayed()
+        compose.onNodeWithTag("settings-source-confirm").assertIsDisplayed()
+        compose.onNodeWithTag("api-key-input").assertDoesNotExist()
         compose.onNodeWithText(compose.activity.getString(R.string.common_cancel)).performClick()
         compose.runOnIdle { assertEquals(chat.mural.core.ConversationProvider.HOSTED_MINUTES, vm.conversationProvider) }
         capture("03-advanced")

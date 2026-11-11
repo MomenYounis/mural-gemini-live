@@ -17,9 +17,9 @@
     <string name="error_local_history_unavailable">The local history couldn\'t be opened. It won\'t be overwritten. Keep the app\'s data and check the file before continuing.</string>
     <string name="error_save_progress_failed">Progress couldn\'t be saved. Export a backup before closing the app.</string>
     <string name="error_resolve_local_history_first">Resolve the local history error first.</string>
-    <string name="error_accept_ai_consent">Accept OpenAI use in Settings before you begin.</string>
-    <string name="error_missing_key">Add your OpenAI key in Settings to begin.</string>
-    <string name="error_key_invalid">Enter a valid OpenAI API key.</string>
+    <string name="error_accept_ai_consent">Accept AI use in Settings before you begin.</string>
+    <string name="error_missing_key">Add a key for the selected AI provider in Settings to begin.</string>
+    <string name="error_key_invalid">Enter a valid key for the selected AI provider.</string>
     <string name="error_key_save">The key couldn\'t be saved securely on this device.</string>
     <string name="error_key_save_failed">The key couldn\'t be saved.</string>
     <string name="error_key_remove">The key couldn\'t be removed. Unlock this device and try again.</string>
@@ -63,7 +63,7 @@
     <string name="notice_topic_ready">Topic ready. Tap Talk or start typing to begin.</string>
     <string name="notice_backup_imported">Your backup has been imported.</string>
     <string name="notice_microphone_blocked">Microphone access is blocked for Mural. You can enable it in phone settings or keep typing.</string>
-    <string name="notice_microphone_permission_needed">Mural needs permission to hear your voice. You can also type instead.</string>
+    <string name="notice_microphone_permission_needed">Allow microphone access to send your speech to your selected AI provider. You can also type instead.</string>
 
     <!-- Talk screen -->
     <string name="talk_tab_title">Talk</string>
@@ -162,13 +162,13 @@
     <string name="settings_save_key">Save key</string>
     <string name="settings_replace_key">Save replacement key</string>
     <string name="settings_remove_key">Remove key</string>
-    <string name="settings_voice_time_label">Recorded voice time</string>
+    <string name="settings_voice_time_label">OpenAI voice usage recorded</string>
     <string name="settings_search_calls_label">Search calls recorded</string>
     <string name="settings_usage_billing_link">Usage and billing</string>
     <string name="settings_section_ai_permission">AI permission</string>
     <string name="settings_ai_consent_accepted">Accepted for this version</string>
     <string name="settings_ai_consent_not_accepted">Not accepted</string>
-    <string name="settings_ai_permission_summary">With permission, Mural sends audio and the text you choose to OpenAI. You can use your history and words without granting it.</string>
+    <string name="settings_ai_permission_summary">With your permission, personal-key conversations send audio and selected text to the provider you choose: Google Gemini or OpenAI. Mural minutes use Mural and OpenAI. You can browse local history without granting permission.</string>
     <string name="settings_revoke_consent_button">Withdraw permission</string>
     <string name="settings_review_consent_button">Review and accept</string>
     <string name="settings_export_backup">Export learning backup</string>
@@ -176,20 +176,20 @@
     <string name="settings_backup_footer">Backups include transcripts and learning evidence, never your API key. Import adds conversations with new IDs. Existing conversations stay unchanged. There is no cloud sync.</string>
     <string name="settings_delete_all_data">Delete all conversations and learning</string>
     <string name="settings_section_help_privacy">Help and privacy</string>
-    <string name="settings_openai_data_controls">AI Data Controls</string>
+    <string name="settings_openai_data_controls">OpenAI data controls</string>
     <string name="settings_open_source_notices">Open-source notices</string>
-    <string name="settings_data_use_footer">Audio and selected text go to OpenAI while you practise. Requests disable provider storage where supported; abuse-monitoring retention may still apply. Raw audio is not saved by Mural.</string>
+    <string name="settings_data_use_footer">Google Gemini receives audio, selected text and learning context when selected with your key. OpenAI receives them with an OpenAI key; Mural also processes hosted conversations. Google resumption can retain conversation state, including audio, for up to 24 hours. Provider retention rules apply. Mural does not save raw audio.</string>
     <string name="settings_app_version_footer">Mural %1$s · Android</string>
     <string name="settings_open_api_keys">Manage API keys</string>
     <string name="settings_delete_key_confirm_title">Delete the saved key?</string>
-    <string name="settings_delete_key_confirm_message">You\'ll need another key to use AI features again.</string>
+    <string name="settings_delete_key_confirm_message">This removes only the selected provider’s key. Other saved provider keys and learning records stay on this phone.</string>
     <string name="settings_delete_all_confirm_title">Delete all learning data on this device?</string>
     <string name="settings_delete_all_confirm_message">This removes conversations, vocabulary and progress. Export a backup first if you want to keep them. Your API key and preferences remain.</string>
     <string name="settings_delete_all_confirm_button">Delete all learning data</string>
     <string name="settings_revoke_consent_confirm_title">Withdraw AI permission?</string>
     <string name="settings_revoke_consent_confirm_message">Conversations, searches, and online meanings will be turned off. Your local history stays available.</string>
     <string name="settings_key_dialog_title">API key</string>
-    <string name="settings_key_dialog_note">Stored encrypted by Android and never included in backups.</string>
+    <string name="settings_key_dialog_note">Enter your own provider key. Android encrypts it locally and excludes it from learning backups. A client-held key can still be extracted from a compromised device.</string>
     <string name="settings_key_dialog_field_label">New key</string>
     <string name="settings_backup_exported_toast">Backup exported</string>
     <string name="settings_backup_imported_toast">Backup imported</string>
@@ -220,7 +220,7 @@
 
     <!-- AI consent -->
     <string name="consent_title">Before we talk.</string>
-    <string name="consent_ai_summary">With your permission, Mural sends audio and selected text to OpenAI to provide conversations and meanings. Provider retention rules apply.</string>
+    <string name="consent_ai_summary">With your permission, Mural sends audio, selected text and learning context to your chosen provider, Google Gemini or OpenAI, for conversations, meanings and learning help. Mural minutes use Mural and OpenAI. Personal Gemini works directly with Google without a Mural account or OpenAI key.</string>
     <string name="consent_local_storage_note">Your learning record is stored on this device. Mural does not save raw audio. You can keep browsing your saved words and conversations without agreeing.</string>
     <string name="consent_privacy_policy_link">Privacy policy</string>
     <string name="consent_agree_button">Agree and continue</string>

@@ -1,0 +1,59 @@
+<resources>
+    <string name="settings_ai_vendor">AI provider</string>
+    <string name="settings_vendor_gemini">Google Gemini</string>
+    <string name="settings_vendor_openai">OpenAI</string>
+    <string name="settings_gemini_key">Gemini API key</string>
+    <string name="settings_hosted_openai">Mural minutes · OpenAI</string>
+    <string name="settings_confirm_hosted_openai">Use OpenAI + Mural minutes</string>
+    <string name="settings_gemini_hosted_unavailable">Mural minutes use OpenAI. Gemini is available only with your own Gemini key.</string>
+    <string name="settings_gemini_key_owner_footer">Google bills your Gemini project. This key is encrypted locally and sent only to Google. Mural and OpenAI do not receive it. Local encryption cannot make a client-held key impossible to extract.</string>
+    <string name="settings_google_data_controls">Google Gemini data and retention</string>
+    <string name="consent_retention_note">Provider rules and project settings apply. Gemini resumption can retain conversation state, including audio, for up to 24 hours; a resumption handle is valid for 2 hours after termination. Grounded Google searches, when available, retain input and output for 30 days. Local encryption does not make a client-held API key impossible to extract.</string>
+    <string name="consent_google_data_link">Google Gemini data rules</string>
+    <string name="consent_openai_data_link">OpenAI data rules</string>
+    <string name="gemini_search_unavailable">Sourced current topics are unavailable with Gemini in this Android version. You can still use the conversation themes and your saved sources.</string>
+    <string name="gemini_unavailable">Gemini could not connect. Check your connection and try again.</string>
+    <string name="gemini_request_rejected">Google could not accept this request. Please try again.</string>
+    <string name="gemini_service_busy">Google’s Gemini service is temporarily busy. Please try again later.</string>
+    <string name="gemini_authentication">Your Gemini key was not accepted. Check it in Settings.</string>
+    <string name="gemini_model_access">Your Google project may not have access to the selected Gemini model. Check its permissions and availability.</string>
+    <string name="gemini_quota">Gemini quota was reached. Check your Google project billing and limits.</string>
+    <string name="gemini_rate_limit">Google is limiting Gemini requests. Wait briefly and try again.</string>
+    <string name="gemini_reconnecting">Reconnecting to Gemini… Audio during this gap is not replayed.</string>
+    <string name="gemini_resumed_gap">Gemini reconnected. Any speech missed during the connection gap was not replayed; please repeat it if needed.</string>
+    <string name="settings_gemini_elapsed_label">Gemini local conversation time</string>
+    <string name="settings_elapsed_format">%1$d min %2$d s</string>
+    <string name="words_review_in_progress">Reviewing your saved replies…</string>
+    <plurals name="words_review_batch_progress">
+        <item quantity="one">Reviewed %1$d of %2$d saved reply</item>
+        <item quantity="other">Reviewed %1$d of %2$d saved replies</item>
+    </plurals>
+    <string name="words_review_words_ready">Your saved Words are ready to practise.</string>
+    <plurals name="words_review_pending_replies">
+        <item quantity="one">%1$d saved reply is waiting for review.</item>
+        <item quantity="other">%1$d saved replies are waiting for review.</item>
+    </plurals>
+    <plurals name="words_review_batch_limit">
+        <item quantity="one">Review up to %1$d reply at a time.</item>
+        <item quantity="other">Review up to %1$d replies at a time.</item>
+    </plurals>
+    <plurals name="words_review_next">
+        <item quantity="one">Review next %1$d reply</item>
+        <item quantity="other">Review next %1$d replies</item>
+    </plurals>
+    <plurals name="words_review_remaining">
+        <item quantity="one">Review remaining %1$d reply</item>
+        <item quantity="other">Review remaining %1$d replies</item>
+    </plurals>
+    <plurals name="words_review_retry_next">
+        <item quantity="one">Retry next %1$d reply</item>
+        <item quantity="other">Retry next %1$d replies</item>
+    </plurals>
+    <plurals name="words_review_retry_remaining">
+        <item quantity="one">Retry remaining %1$d reply</item>
+        <item quantity="other">Retry remaining %1$d replies</item>
+    </plurals>
+    <string name="words_review_failed">Your conversations are saved. Some passages could not be reviewed. You can retry the learning review.</string>
+    <string name="words_review_timeout">Your conversations are saved. The learning review took too long. Please try again.</string>
+    <string name="words_review_invalid">Your conversations are saved. Part of the learning review could not be verified. Please try again.</string>
+</resources>

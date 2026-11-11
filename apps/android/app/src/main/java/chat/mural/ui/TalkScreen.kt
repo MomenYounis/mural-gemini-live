@@ -106,8 +106,20 @@ fun TalkScreen(
     var lookupWord by rememberSaveable { mutableStateOf("") }
     var lookupSentence by rememberSaveable { mutableStateOf("") }
     var transcript by remember { mutableStateOf<SessionRecord?>(null) }
+    var callElapsedSeconds by rememberSaveable(vm.session?.id) { mutableStateOf(0L) }
+    LaunchedEffect(vm.state, vm.session?.id) {
+        if (vm.state == "active") {
+            val startMs = System.currentTimeMillis() - (callElapsedSeconds * 1000L)
+            while (true) {
+                kotlinx.coroutines.delay(1000L)
+                callElapsedSeconds = ((System.currentTimeMillis() - startMs) / 1000L).coerceAtLeast(callElapsedSeconds + 1L)
+            }
+        } else if (vm.state !in listOf("connecting", "active", "closing")) {
+            callElapsedSeconds = 0L
+        }
+    }
     val assistantPassage = vm.session?.passages?.lastOrNull { it.speaker == Speaker.assistant }
-    val passage = assistantPassage?.text
+    val passage = vm.interimAssistantCaption ?: assistantPassage?.text
     val caption = passage?.takeIf { it.isNotBlank() } ?: vm.language.greeting
     val busy = vm.state == "connecting" || vm.state == "closing"
     val targetScroll = remember(assistantPassage?.id) { ScrollState(0) }
@@ -168,10 +180,27 @@ fun TalkScreen(
                     append("\n"); append(status.substringAfter('\n'))
                 } else append(status)
             }
-            Text(statusCaption, style = MaterialTheme.typography.bodySmall,
-                color = MuralColors.Secondary, textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = if (vm.inactivitySeconds != null && assistantPassage != null) 40.dp else 0.dp)
-                    .testTag("conversation-status"))
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(statusCaption, style = MaterialTheme.typography.bodySmall,
+                    color = MuralColors.Secondary, textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = if (vm.inactivitySeconds != null && assistantPassage != null) 40.dp else 0.dp)
+                        .testTag("conversation-status"))
+                if (vm.state == "active") {
+                    Text(
+                        text = formatCallElapsedTime(callElapsedSeconds),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = MuralColors.Secondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.testTag("call-duration-timer"),
+                    )
+                }
+            }
             if (assistantPassage != null && passage?.isNotBlank() == true) {
                 Box(Modifier.matchParentSize(), contentAlignment = Alignment.CenterEnd) {
                     ReportUtteranceAction(onClick = {
@@ -230,10 +259,10 @@ fun TalkScreen(
             }
             }
         }
-        vm.session?.passages?.lastOrNull { it.speaker == Speaker.user }?.let { user ->
+        (vm.interimUserCaption ?: vm.session?.passages?.lastOrNull { it.speaker == Speaker.user }?.text)?.let { userText ->
             Row(Modifier.padding(top = 3.dp).testTag("user-caption"), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.history_speaker_you), style = MaterialTheme.typography.labelSmall, color = MuralColors.Secondary)
-                Text(user.text.takeLast(160), style = MaterialTheme.typography.bodySmall, color = MuralColors.Secondary,
+                Text(userText.takeLast(160), style = MaterialTheme.typography.bodySmall, color = MuralColors.Secondary,
                     textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -452,4 +481,16 @@ private fun statusText(state: String, muted: Boolean, voice: Boolean, inactivity
     "ended" -> stringResource(R.string.talk_status_ended)
     "failed" -> stringResource(R.string.talk_status_failed)
     else -> stringResource(R.string.talk_status_idle)
+}
+
+internal fun formatCallElapsedTime(seconds: Long): String {
+    val safeSeconds = seconds.coerceAtLeast(0L)
+    val hours = safeSeconds / 3600L
+    val minutes = (safeSeconds % 3600L) / 60L
+    val secs = safeSeconds % 60L
+    return if (hours > 0L) {
+        String.format(java.util.Locale.US, "%d:%02d:%02d", hours, minutes, secs)
+    } else {
+        String.format(java.util.Locale.US, "%02d:%02d", minutes, secs)
+    }
 }

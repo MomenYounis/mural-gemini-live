@@ -63,7 +63,7 @@ import chat.mural.core.LanguageModule
 import chat.mural.core.LanguageRegistry
 import chat.mural.core.MeaningLanguages
 
-const val AI_CONSENT_VERSION = 1
+const val AI_CONSENT_VERSION = 2
 
 @Composable
 fun OnboardingScreen(
@@ -247,6 +247,12 @@ fun AIConsentDialog(onAgree: () -> Unit, onDecline: () -> Unit) {
                     stringResource(R.string.consent_local_storage_note),
                     color = MuralColors.Secondary,
                 )
+                Text(stringResource(R.string.consent_retention_note), color = MuralColors.Secondary,
+                    style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.consent_google_data_link), color = MuralColors.Orange,
+                    modifier = Modifier.clickable { uriHandler.openUri("https://ai.google.dev/gemini-api/docs/zdr") }.padding(vertical = 8.dp))
+                Text(stringResource(R.string.consent_openai_data_link), color = MuralColors.Orange,
+                    modifier = Modifier.clickable { uriHandler.openUri("https://developers.openai.com/api/docs/guides/your-data") }.padding(vertical = 8.dp))
                 Text(
                     stringResource(R.string.consent_privacy_policy_link),
                     color = MuralColors.Orange,

@@ -1,0 +1,66 @@
+<resources>
+    <string name="settings_ai_vendor">Proveedor de IA</string>
+    <string name="settings_vendor_gemini">Google Gemini</string>
+    <string name="settings_vendor_openai">OpenAI</string>
+    <string name="settings_gemini_key">Clave de API de Gemini</string>
+    <string name="settings_hosted_openai">Minutos de Mural · OpenAI</string>
+    <string name="settings_confirm_hosted_openai">Usar OpenAI + minutos de Mural</string>
+    <string name="settings_gemini_hosted_unavailable">Los minutos de Mural usan OpenAI. Gemini solo está disponible con tu propia clave de Gemini.</string>
+    <string name="settings_gemini_key_owner_footer">Google factura el uso a tu proyecto de Gemini. La clave se cifra en el teléfono y solo se envía a Google; Mural y OpenAI no la reciben. El cifrado local no impide toda extracción de una clave guardada en el cliente.</string>
+    <string name="settings_google_data_controls">Datos y conservación de Google Gemini</string>
+    <string name="consent_retention_note">Se aplican las normas del proveedor y los ajustes del proyecto. La reanudación de Gemini puede conservar el estado, incluido el audio, hasta 24 horas; el identificador de reanudación vale 2 horas tras finalizar. Las búsquedas de Google con fuentes, cuando estén disponibles, conservan entradas y salidas 30 días. El cifrado local no impide toda extracción de la clave del cliente.</string>
+    <string name="consent_google_data_link">Normas de datos de Google Gemini</string>
+    <string name="consent_openai_data_link">Normas de datos de OpenAI</string>
+    <string name="gemini_search_unavailable">Los temas actuales con fuentes no están disponibles con Gemini en esta versión de Android. Puedes usar los temas de conversación y las fuentes guardadas.</string>
+    <string name="gemini_unavailable">No se pudo conectar con Gemini. Comprueba tu conexión e inténtalo de nuevo.</string>
+    <string name="gemini_request_rejected">Google no pudo aceptar esta solicitud. Inténtalo de nuevo.</string>
+    <string name="gemini_service_busy">El servicio Gemini de Google está ocupado temporalmente. Inténtalo de nuevo más tarde.</string>
+    <string name="gemini_authentication">No se aceptó tu clave de Gemini. Revísala en Ajustes.</string>
+    <string name="gemini_model_access">Tu proyecto de Google podría no tener acceso al modelo de Gemini elegido. Comprueba sus permisos y disponibilidad.</string>
+    <string name="gemini_quota">Se alcanzó la cuota de Gemini. Revisa la facturación y los límites de tu proyecto de Google.</string>
+    <string name="gemini_rate_limit">Google está limitando las solicitudes a Gemini. Espera un momento e inténtalo de nuevo.</string>
+    <string name="gemini_reconnecting">Reconectando con Gemini… El audio de este intervalo no se volverá a enviar.</string>
+    <string name="gemini_resumed_gap">Gemini volvió a conectarse. No se volvió a enviar el audio perdido durante el corte; repítelo si hace falta.</string>
+    <string name="settings_gemini_elapsed_label">Tiempo de conversación local de Gemini</string>
+    <string name="settings_elapsed_format">%1$d min %2$d s</string>
+    <string name="words_review_in_progress">Revisando tus respuestas guardadas…</string>
+    <plurals name="words_review_batch_progress">
+        <item quantity="one">Respuesta guardada revisada: %1$d de %2$d</item>
+        <item quantity="many">Respuestas guardadas revisadas: %1$d de %2$d</item>
+        <item quantity="other">Respuestas guardadas revisadas: %1$d de %2$d</item>
+    </plurals>
+    <string name="words_review_words_ready">Tus palabras guardadas están listas para practicar.</string>
+    <plurals name="words_review_pending_replies">
+        <item quantity="one">Hay %1$d respuesta guardada pendiente de revisión.</item>
+        <item quantity="many">Hay %1$d respuestas guardadas pendientes de revisión.</item>
+        <item quantity="other">Hay %1$d respuestas guardadas pendientes de revisión.</item>
+    </plurals>
+    <plurals name="words_review_batch_limit">
+        <item quantity="one">Revisa hasta %1$d respuesta cada vez.</item>
+        <item quantity="many">Revisa hasta %1$d respuestas cada vez.</item>
+        <item quantity="other">Revisa hasta %1$d respuestas cada vez.</item>
+    </plurals>
+    <plurals name="words_review_next">
+        <item quantity="one">Revisar %1$d respuesta más</item>
+        <item quantity="many">Revisar las siguientes %1$d respuestas</item>
+        <item quantity="other">Revisar las siguientes %1$d respuestas</item>
+    </plurals>
+    <plurals name="words_review_remaining">
+        <item quantity="one">Revisar %1$d respuesta restante</item>
+        <item quantity="many">Revisar las %1$d respuestas restantes</item>
+        <item quantity="other">Revisar las %1$d respuestas restantes</item>
+    </plurals>
+    <plurals name="words_review_retry_next">
+        <item quantity="one">Reintentar %1$d respuesta más</item>
+        <item quantity="many">Reintentar las siguientes %1$d respuestas</item>
+        <item quantity="other">Reintentar las siguientes %1$d respuestas</item>
+    </plurals>
+    <plurals name="words_review_retry_remaining">
+        <item quantity="one">Reintentar %1$d respuesta restante</item>
+        <item quantity="many">Reintentar las %1$d respuestas restantes</item>
+        <item quantity="other">Reintentar las %1$d respuestas restantes</item>
+    </plurals>
+    <string name="words_review_failed">Tus conversaciones están guardadas. No se pudieron revisar algunos fragmentos. Puedes volver a intentar la revisión del aprendizaje.</string>
+    <string name="words_review_timeout">Tus conversaciones están guardadas. La revisión del aprendizaje tardó demasiado. Inténtalo de nuevo.</string>
+    <string name="words_review_invalid">Tus conversaciones están guardadas. No se pudo verificar parte de la revisión del aprendizaje. Inténtalo de nuevo.</string>
+</resources>

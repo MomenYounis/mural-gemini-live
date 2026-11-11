@@ -55,7 +55,7 @@ class DesignReviewTest {
         compose.onNodeWithTag("onboarding-meaning-picker").performClick()
         compose.onNodeWithTag("meaning-English").performClick()
         compose.onNodeWithTag("onboarding-continue").performClick()
-        compose.onNodeWithTag("ai-consent-decline").performClick()
+        compose.onNodeWithTag("ai-consent-decline").performScrollTo().performClick()
         compose.onNodeWithTag("start-conversation").assertIsDisplayed()
         compose.onNodeWithTag("meaning-caption").assertIsDisplayed()
         val nav = compose.onNodeWithTag("floating-navigation").fetchSemanticsNode().boundsInRoot

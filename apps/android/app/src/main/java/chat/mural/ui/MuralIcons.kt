@@ -18,7 +18,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 enum class MuralSymbol { Flashcards, Wave, Themes, Words, Settings, Mic, MicOff, Captions, Transcript, End,
-    Keyboard, Sparkles, ArrowUp, ChevronDown, Back, Search, Close, Check, Leaf, ChevronRight, Coffee, Globe, Sun, Food, Music }
+    Keyboard, Sparkles, ArrowUp, ChevronDown, Back, Search, Close, Check, Leaf, ChevronRight, Coffee, Globe, Sun, Food, Music, Speaker }
 
 /** Original, consistently weighted artwork; no platform-dependent text glyphs. */
 @Composable
@@ -93,6 +93,14 @@ fun MuralIcon(symbol: MuralSymbol, modifier: Modifier = Modifier, color: Color =
                     path { moveTo(3f,8f); quadraticTo(6f,13f,9f,8f) }; path { moveTo(19f,21f); lineTo(19f,3f); cubicTo(12f,8f,14f,14f,19f,14f) } }
                 MuralSymbol.Music -> { path { moveTo(9f,18f); lineTo(9f,5f); lineTo(21f,2f); lineTo(21f,15f) }
                     drawOval(color,Offset(3f,16f),Size(6f,5f)); drawOval(color,Offset(15f,13f),Size(6f,5f)); line(9f,9f,21f,6f) }
+                MuralSymbol.Speaker -> {
+                    path {
+                        moveTo(4f, 9f); lineTo(8f, 9f); lineTo(13f, 5f)
+                        lineTo(13f, 19f); lineTo(8f, 15f); lineTo(4f, 15f); close()
+                    }
+                    path { moveTo(16.5f, 8.5f); quadraticTo(19f, 12f, 16.5f, 15.5f) }
+                    path { moveTo(19f, 6f); quadraticTo(22.5f, 12f, 19f, 18f) }
+                }
             }
         }
     }

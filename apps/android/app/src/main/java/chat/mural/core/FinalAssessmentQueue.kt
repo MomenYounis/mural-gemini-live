@@ -28,7 +28,7 @@ data class FinalAssessmentResult(
     }
 }
 
-/** Finishes the latest unassessed user passage without owning the visible conversation. */
+/** Finishes one unassessed user passage without owning the visible conversation. */
 class FinalAssessmentQueue(
     private val scope: CoroutineScope,
     timeoutMillis: Long = 15_000,
@@ -36,19 +36,23 @@ class FinalAssessmentQueue(
     private val assess: suspend (SessionRecord, Passage) -> FinalAssessmentResult,
 ) {
     var onResult: (suspend (FinalAssessmentResult) -> Unit)? = null
+    /** Coordinator maps failures to safe product status; original evidence and retry tickets remain. */
+    var onFailure: ((SessionRecord, Passage, Exception) -> Unit)? = null
     /** Must commit the retry count and transcript before a provider request can start. */
     var beforeAssessment: (suspend (SessionRecord, Passage) -> Boolean)? = null
-    private val timeoutMillis = timeoutMillis.coerceIn(1, 15_000)
+    private val defaultTimeoutMillis = timeoutMillis
     private class Pending(val token: Any, val deadline: Long, val request: Job, val timer: Job)
     private val jobs = mutableMapOf<String, Pending>()
 
-    fun submit(session: SessionRecord): Boolean {
+    fun submit(session: SessionRecord, passageID: String? = null, timeoutMillis: Long? = null): Boolean {
         if (session.endedAt == null || jobs.containsKey(session.id)) return false
-        val passage = session.passages.lastOrNull { it.speaker == Speaker.user } ?: return false
-        if (passage.text.length < 3 || session.assessments.any { it.passageID == passage.id && it.revisionKey == passage.revisionKey }) return false
+        val passages = FinalAssessmentRecovery.pendingPassages(session)
+        val passage = if (passageID == null) passages.lastOrNull() else passages.firstOrNull { it.id == passageID }
+        passage ?: return false
         val snapshot = session.copy(fragments = session.fragments.toMutableList(), assessments = session.assessments.toMutableList())
         val token = Any()
-        val deadline = clock() + timeoutMillis
+        val effectiveTimeoutMillis = (timeoutMillis ?: defaultTimeoutMillis).coerceIn(1, 120_000)
+        val deadline = clock() + effectiveTimeoutMillis
         val request = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 if (beforeAssessment?.invoke(snapshot, passage) == false) {
@@ -59,16 +63,29 @@ class FinalAssessmentQueue(
                 val result = assess(snapshot, passage)
                 if (jobs[snapshot.id]?.token !== token) return@launch
                 jobs.remove(snapshot.id)?.timer?.cancel()
-                if (clock() > deadline || result.sessionID != snapshot.id || result.languageID != snapshot.languageID) return@launch
+                if (clock() > deadline) {
+                    onFailure?.invoke(snapshot, passage, FinalAssessmentTimeoutException())
+                    return@launch
+                }
+                if (result.sessionID != snapshot.id || result.languageID != snapshot.languageID ||
+                    result.assessment.passageID != passage.id || result.assessment.revisionKey != passage.revisionKey) {
+                    onFailure?.invoke(snapshot, passage, FinalAssessmentInvalidResultException())
+                    return@launch
+                }
                 onResult?.invoke(result)
             } catch (e: Exception) {
-                if (jobs[snapshot.id]?.token === token) jobs.remove(snapshot.id)?.timer?.cancel()
+                val current = jobs[snapshot.id]?.token === token
+                if (current) jobs.remove(snapshot.id)?.timer?.cancel()
                 if (e is kotlinx.coroutines.CancellationException) throw e
+                if (current) onFailure?.invoke(snapshot, passage, e)
             }
         }
         val timer = scope.launch(start = CoroutineStart.LAZY) {
-            delay(timeoutMillis)
-            if (jobs[snapshot.id]?.token === token) cancel(snapshot.id)
+            delay(effectiveTimeoutMillis)
+            if (jobs[snapshot.id]?.token === token) {
+                cancel(snapshot.id)
+                onFailure?.invoke(snapshot, passage, FinalAssessmentTimeoutException())
+            }
         }
         jobs[snapshot.id] = Pending(token, deadline, request, timer)
         timer.start()
@@ -85,6 +102,9 @@ class FinalAssessmentQueue(
 
     fun cancelAll() = jobs.keys.toList().forEach(::cancel)
 }
+
+class FinalAssessmentTimeoutException : Exception("The word assessment timed out. Please try again.")
+class FinalAssessmentInvalidResultException : Exception("The word assessment could not be verified. Please try again.")
 
 /** Local retry metadata. It contains no transcript, credentials or provider response. */
 @Serializable
@@ -105,24 +125,29 @@ object FinalAssessmentRecovery {
     const val MAX_RECOVERED_PER_LAUNCH = 5
     private const val MAX_AGE_SECONDS = 7 * 24 * 60 * 60.0
 
-    fun passage(session: SessionRecord): Passage? {
-        if (session.endedAt == null) return null
-        val passage = session.passages.lastOrNull { it.speaker == Speaker.user } ?: return null
-        return passage.takeIf { it.text.length >= 3 && session.assessments.none { assessment ->
-            assessment.passageID == it.id && assessment.revisionKey == it.revisionKey
-        } }
+    /** Saved learner evidence remains eligible when a later passage has already been assessed. */
+    fun pendingPassages(session: SessionRecord): List<Passage> {
+        if (session.endedAt == null) return emptyList()
+        return session.passages.filter { passage -> passage.speaker == Speaker.user && passage.text.length >= 3 &&
+            session.assessments.none { assessment ->
+                assessment.passageID == passage.id && assessment.revisionKey == passage.revisionKey
+            }
+        }
     }
 
+    fun passage(session: SessionRecord): Passage? = pendingPassages(session).lastOrNull()
+
     fun enqueue(session: SessionRecord, tickets: List<FinalAssessmentTicket>): List<FinalAssessmentTicket> {
-        val passage = passage(session)
-        val existing = tickets.firstOrNull { it.sessionID == session.id }
-        if (passage != null && existing?.matches(session, passage) == true) return tickets
-        return tickets.filterNot { it.sessionID == session.id } +
-            listOfNotNull(passage?.let { FinalAssessmentTicket(session.id, it.id, it.revisionKey) })
+        val pending = pendingPassages(session)
+        val retained = pending.map { passage ->
+            tickets.firstOrNull { it.matches(session, passage) }
+                ?: FinalAssessmentTicket(session.id, passage.id, passage.revisionKey)
+        }
+        return tickets.filterNot { it.sessionID == session.id } + retained
     }
 
     fun canAttempt(ticket: FinalAssessmentTicket, session: SessionRecord, now: Double): Boolean {
-        val passage = passage(session) ?: return false
+        val passage = pendingPassages(session).firstOrNull { ticket.matches(session, it) } ?: return false
         val endedAt = session.endedAt ?: return false
         if (!ticket.matches(session, passage) || ticket.attempts !in 0 until MAX_ATTEMPTS ||
             !now.isFinite() || now - endedAt !in 0.0..MAX_AGE_SECONDS) return false
@@ -135,6 +160,7 @@ object FinalAssessmentRecovery {
     fun recover(sessions: List<SessionRecord>, tickets: List<FinalAssessmentTicket>, now: Double): List<SessionRecord> {
         val byID = sessions.associateBy { it.id }
         return tickets.mapNotNull { ticket -> byID[ticket.sessionID]?.takeIf { canAttempt(ticket, it, now) } }
+            .distinctBy { it.id }
             .sortedByDescending { it.endedAt }
             .take(MAX_RECOVERED_PER_LAUNCH)
     }

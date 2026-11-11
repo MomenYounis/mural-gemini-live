@@ -7,6 +7,8 @@ import chat.mural.core.ArchiveCodec
 import chat.mural.core.nowSeconds
 import chat.mural.core.FinalAssessmentRecovery
 import chat.mural.core.FinalAssessmentTicket
+import chat.mural.core.SentenceCard
+import chat.mural.core.SessionReport
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -16,7 +18,12 @@ import java.io.File
 import java.io.ByteArrayOutputStream
 
 /** App-private archive; API credentials are deliberately kept elsewhere. */
-data class LearningSnapshot(val archive: Archive, val finalAssessments: List<FinalAssessmentTicket> = emptyList())
+data class LearningSnapshot(
+    val archive: Archive,
+    val finalAssessments: List<FinalAssessmentTicket> = emptyList(),
+    val sessionReports: List<SessionReport> = emptyList(),
+    val sentenceCards: List<SentenceCard> = emptyList(),
+)
 
 class LearningRepository(context: Context) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -34,12 +41,19 @@ class LearningRepository(context: Context) {
             }
             val encoded = output.toString(Charsets.UTF_8.name())
             val archive = ArchiveCodec.decode(encoded)
-            val metadata = json.parseToJsonElement(encoded).jsonObject["androidFinalAssessments"]
+            val rootObj = json.parseToJsonElement(encoded).jsonObject
+            val metadata = rootObj["androidFinalAssessments"]
             val tickets = metadata?.let { json.decodeFromJsonElement<List<FinalAssessmentTicket>>(it) } ?: emptyList()
-            require(tickets.size <= 10_000 && tickets.map { it.sessionID }.distinct().size == tickets.size)
+            val reports = rootObj["sessionReports"]?.let {
+                runCatching { json.decodeFromJsonElement<List<SessionReport>>(it) }.getOrNull()
+            } ?: emptyList()
+            val cards = rootObj["sentenceCards"]?.let {
+                runCatching { json.decodeFromJsonElement<List<SentenceCard>>(it) }.getOrNull()
+            } ?: emptyList()
+            require(tickets.size <= 10_000 && tickets.map { Triple(it.sessionID, it.passageID, it.revisionKey) }.distinct().size == tickets.size)
             require(tickets.all { it.attempts in 0..FinalAssessmentRecovery.MAX_ATTEMPTS &&
                 (it.lastAttemptAt == null || it.lastAttemptAt.isFinite()) })
-            LearningSnapshot(archive, tickets)
+            LearningSnapshot(archive, tickets, reports, cards)
         }
         val archive = snapshot.archive
         var tickets = snapshot.finalAssessments
@@ -49,7 +63,7 @@ class LearningRepository(context: Context) {
             it.endedAt = recoveredAt; it.endReason = "App closed before finalization"
             tickets = FinalAssessmentRecovery.enqueue(it, tickets)
         }
-        val recovered = LearningSnapshot(archive, tickets)
+        val recovered = LearningSnapshot(archive, tickets, snapshot.sessionReports, snapshot.sentenceCards)
         if (unfinished.isNotEmpty()) save(recovered)
         return recovered
     }
@@ -57,7 +71,12 @@ class LearningRepository(context: Context) {
         // The archive and retry ledger share one AtomicFile commit. Public exports omit this
         // Android-only metadata and remain compatible with the iOS archive format.
         val archive = json.parseToJsonElement(ArchiveCodec.encode(snapshot.archive)).jsonObject
-        val stored = JsonObject(archive + ("androidFinalAssessments" to json.encodeToJsonElement(snapshot.finalAssessments)))
+        val stored = JsonObject(
+            archive +
+                ("androidFinalAssessments" to json.encodeToJsonElement(snapshot.finalAssessments.takeLast(10_000))) +
+                ("sessionReports" to json.encodeToJsonElement(snapshot.sessionReports.takeLast(2_000))) +
+                ("sentenceCards" to json.encodeToJsonElement(snapshot.sentenceCards.takeLast(10_000)))
+        )
         val bytes = stored.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= ArchiveCodec.MAXIMUM_ENCODED_BYTES) { "The learning archive reached its storage limit; export a backup." }
         val stream = file.startWrite()

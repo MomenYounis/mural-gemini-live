@@ -1,6 +1,7 @@
 package chat.mural.network
 
 import android.content.Context
+import chat.mural.core.AIVendor
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
@@ -10,11 +11,12 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** Stores the OpenAI API key encrypted by a non-exportable Android Keystore key. */
+/** Vendor-isolated credentials encrypted by non-exportable Android Keystore keys. */
 class CredentialStore internal constructor(
     context: Context,
     preferencesName: String,
     private val keyAlias: String,
+    private val vendor: AIVendor = AIVendor.OPENAI,
 ) {
     constructor(context: Context) : this(context, PREFERENCES, KEY_ALIAS)
 
@@ -26,7 +28,7 @@ class CredentialStore internal constructor(
     @Synchronized
     fun save(key: String) {
         val value = key.trim()
-        if (!value.startsWith("sk-") || value.length < 20 || value.any(Char::isWhitespace)) {
+        if (!validCredential(vendor, value)) {
             throw CredentialException.Invalid
         }
 
@@ -59,7 +61,7 @@ class CredentialStore internal constructor(
                 GCMParameterSpec(GCM_TAG_BITS, Base64.decode(encodedIv, Base64.NO_WRAP)),
             )
             cipher.doFinal(Base64.decode(encodedCiphertext, Base64.NO_WRAP)).toString(Charsets.UTF_8)
-                .takeIf { it.startsWith("sk-") && it.length >= 20 && it.none(Char::isWhitespace) }
+                .takeIf { validCredential(vendor, it) }
                 ?: clearUnreadableCredential()
         } catch (_: Exception) {
             clearUnreadableCredential()
@@ -108,12 +110,37 @@ class CredentialStore internal constructor(
     }
 
     sealed class CredentialException(message: String) : IllegalStateException(message) {
-        data object Invalid : CredentialException("Enter a valid OpenAI API key.")
+        data object Invalid : CredentialException("Enter a valid API key for the selected provider.")
         data object Save : CredentialException("The key couldn't be saved securely on this device.")
         data object Remove : CredentialException("The key couldn't be removed. Unlock this device and try again.")
     }
 
     companion object {
+        fun forVendor(context: Context, vendor: AIVendor): CredentialStore = when (vendor) {
+            AIVendor.OPENAI -> CredentialStore(context)
+            AIVendor.GEMINI -> CredentialStore(context, "mural_gemini_credentials", "chat.mural.gemini.aes", vendor)
+        }
+        fun forTeachingProvider(context: Context, provider: TeachingProvider): CredentialStore = when (provider) {
+            TeachingProvider.DEFAULT_GEMINI -> forVendor(context, AIVendor.GEMINI)
+            TeachingProvider.OPENROUTER -> CredentialStore(
+                context,
+                "mural_openrouter_credentials",
+                "chat.mural.openrouter.aes",
+                AIVendor.GEMINI,
+            )
+            TeachingProvider.SOVEREIGN_EG -> CredentialStore(
+                context,
+                "mural_sovereigneg_credentials",
+                "chat.mural.sovereigneg.aes",
+                AIVendor.GEMINI,
+            )
+        }
+        internal fun validCredential(vendor: AIVendor, value: String): Boolean =
+            when (vendor) {
+                AIVendor.OPENAI -> value.startsWith("sk-") && value.length >= 20 && value.none(Char::isWhitespace)
+                AIVendor.GEMINI -> value.length in 20..500 && value.all { it.code in 33..126 }
+            }
+
         // The app excludes all shared preferences from cloud backup and device transfer.
         private const val PREFERENCES = "mural_openai_credentials"
         private const val CIPHERTEXT = "ciphertext"

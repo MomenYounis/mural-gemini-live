@@ -8,6 +8,7 @@ import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -21,6 +22,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.compose.ui.text.AnnotatedString
 import chat.mural.core.Preferences
 import chat.mural.core.CloudAction
+import chat.mural.core.ConversationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.runner.RunWith
@@ -34,6 +36,7 @@ class MuralOnboardingTest {
     @get:Rule
     val compose = createAndroidComposeRule<MainActivity>()
     private var originalPreferences = Preferences()
+    private var originalProvider: ConversationProvider? = null
     private var preferencesCaptured = false
 
     @Before fun preservePreferences() {
@@ -41,6 +44,7 @@ class MuralOnboardingTest {
         compose.runOnIdle {
             val vm = ViewModelProvider(compose.activity)[MuralViewModel::class.java]
             originalPreferences = vm.archive.preferences.copy()
+            originalProvider = vm.conversationProvider
             preferencesCaptured = true
             vm.updatePreferences(originalPreferences.copy(hasOnboarded = false, aiConsentVersion = null))
         }
@@ -49,7 +53,11 @@ class MuralOnboardingTest {
 
     @After fun restorePreferences() {
         if (!preferencesCaptured) return
-        compose.runOnIdle { ViewModelProvider(compose.activity)[MuralViewModel::class.java].updatePreferences(originalPreferences) }
+        compose.runOnIdle {
+            val vm = ViewModelProvider(compose.activity)[MuralViewModel::class.java]
+            vm.updatePreferences(originalPreferences)
+            originalProvider?.let(vm::selectConversationProvider)
+        }
     }
 
     @Test
@@ -59,7 +67,7 @@ class MuralOnboardingTest {
         compose.onNodeWithTag("onboarding-meaning-title").assertIsDisplayed()
         compose.onNodeWithTag("onboarding-continue").performClick()
         compose.onNodeWithTag("ai-consent-title").assertIsDisplayed()
-        compose.onNodeWithTag("ai-consent-decline").performClick()
+        compose.onNodeWithTag("ai-consent-decline").performScrollTo().performClick()
         compose.onNodeWithTag("talk-screen").assertIsDisplayed()
         compose.onNodeWithTag("tab-words").performClick()
         compose.onNodeWithTag("words-screen").assertIsDisplayed()
@@ -72,7 +80,7 @@ class MuralOnboardingTest {
         compose.runOnIdle {
             assertEquals(CloudAction.StartVoice, ViewModelProvider(compose.activity)[MuralViewModel::class.java].pendingCloudAction)
         }
-        compose.onNodeWithTag("ai-consent-decline").performClick()
+        compose.onNodeWithTag("ai-consent-decline").performScrollTo().performClick()
         compose.runOnIdle { assertNull(ViewModelProvider(compose.activity)[MuralViewModel::class.java].pendingCloudAction) }
 
         compose.onNodeWithTag("tab-settings").performClick()
@@ -82,11 +90,14 @@ class MuralOnboardingTest {
         compose.onNodeWithTag("settings-ai-permission").performClick()
         compose.onNodeWithTag("review-ai-consent").performClick()
         compose.onNodeWithTag("ai-consent-title").assertIsDisplayed()
-        compose.onNodeWithTag("ai-consent-agree").performClick()
+        compose.onNodeWithTag("ai-consent-agree").performScrollTo().performClick()
         compose.onNodeWithTag("settings-ai-permission").performClick()
         compose.onNodeWithTag("revoke-ai-consent").assertIsDisplayed()
         compose.onNode(hasText(compose.activity.getString(R.string.common_close))).performClick()
         compose.onNodeWithTag("settings-done").performClick()
+        compose.runOnIdle {
+            ViewModelProvider(compose.activity)[MuralViewModel::class.java].selectConversationProvider(ConversationProvider.PERSONAL_KEY)
+        }
         compose.onNodeWithTag("settings-screen").performScrollToNode(hasTestTag("settings-conversation-access"))
         compose.onNodeWithTag("settings-conversation-access").performClick()
         compose.onNodeWithTag("settings-conversation-access-PERSONAL_KEY").performClick()
