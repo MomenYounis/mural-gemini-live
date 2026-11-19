@@ -29,10 +29,12 @@ class CaptionFlashcardExperienceTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private lateinit var vm: MuralViewModel
     private lateinit var original: String
+    private var originalSentenceCards: List<SentenceCard> = emptyList()
     @Before fun prepare() {
         vm = compose.awaitHistoryLoaded()
         compose.runOnIdle {
             original = ArchiveCodec.encode(vm.archive)
+            originalSentenceCards = vm.sentenceCards
             vm.updatePreferences(vm.archive.preferences.copy(hasOnboarded = true, aiConsentVersion = chat.mural.ui.AI_CONSENT_VERSION, learningLanguageID = "ru", meaningVisible = true))
         }
     }
@@ -42,7 +44,11 @@ class CaptionFlashcardExperienceTest {
     }
     @After fun restore() {
         if (!::original.isInitialized) return
-        compose.runOnIdle { state("session", null); state("state", "idle"); state("meaning", ""); state("archive", ArchiveCodec.decode(original)) }
+        compose.runOnIdle {
+            state("session", null); state("state", "idle"); state("meaning", "")
+            state("sentenceCards", originalSentenceCards)
+            state("archive", ArchiveCodec.decode(original))
+        }
     }
     private fun capture(name: String) {
         compose.waitForIdle()
@@ -50,7 +56,7 @@ class CaptionFlashcardExperienceTest {
         val folder = File(instrumentation.targetContext.filesDir, "feature-review").apply { mkdirs() }
         File(folder, "$name.png").outputStream().use { instrumentation.uiAutomation.takeScreenshot()!!.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
-    private fun sample(id: String, lemma: String, meaning: String, day: Int = 0): SessionRecord {
+    private fun legacyWordSample(id: String, lemma: String, meaning: String, day: Int = 0): SessionRecord {
         val date = nowSeconds() - day * 86400
         val record = SessionRecord(languageID = id, startedAt = date)
         record.append(Fragment(id = "word-$id-$lemma-$day", speaker = Speaker.user, text = lemma, startMS = 0, endMS = 1000))
@@ -59,19 +65,52 @@ class CaptionFlashcardExperienceTest {
             listOf(WordProposal(lemma, meaning, lemma, EvidenceKind.independent, .95, p.fragments.map { it.id }, lemma, id)), createdAt = date)
         return record
     }
-    private fun seedWords() {
+    private fun seedSentenceCards() {
+        val now = System.currentTimeMillis()
         compose.runOnIdle {
-            state("archive", vm.archive.copy(sessions = mutableListOf(sample("ru", "книга", "book"), sample("ru", "кофе", "coffee"), sample("nl", "fiets", "bicycle"))))
+            state(
+                "sentenceCards",
+                listOf(
+                    SentenceCard(
+                        id = "ru-card-1",
+                        topic = "Reading",
+                        languageID = "ru",
+                        sourceSessionID = "sess-ru-1",
+                        sourceSessionIDs = listOf("sess-ru-1"),
+                        frontText = "كتاب ممتع",
+                        backText = "Я люблю читать книги.",
+                        explanation = "Use the infinitive 'читать' after 'люблю'.",
+                        userOriginalMistake = "Я люблю читаю книги.",
+                        nextReviewDate = now - 1_000L,
+                    ),
+                    SentenceCard(
+                        id = "ru-card-2",
+                        topic = "Cafe",
+                        languageID = "ru",
+                        sourceSessionID = "sess-ru-2",
+                        sourceSessionIDs = listOf("sess-ru-2"),
+                        frontText = "كوب قهوة",
+                        backText = "Можно мне чашку кофе?",
+                        explanation = "Polite request phrasing at a cafe.",
+                        userOriginalMistake = "Дай мне кофе.",
+                        nextReviewDate = now - 500L,
+                    ),
+                    SentenceCard(
+                        id = "nl-card-1",
+                        topic = "Cycling",
+                        languageID = "nl",
+                        sourceSessionID = "sess-nl-1",
+                        sourceSessionIDs = listOf("sess-nl-1"),
+                        frontText = "دراجة",
+                        backText = "Ik fiets naar mijn werk.",
+                        explanation = "Dutch phrasing for cycling to work.",
+                        userOriginalMistake = "",
+                        nextReviewDate = now - 1_000L,
+                    ),
+                ),
+            )
         }
         compose.onNodeWithTag("tab-words").performClick()
-    }
-    private fun position(value: String) {
-        compose.onNodeWithTag("flashcard-pager").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, value))
-    }
-    private fun accessibleMove(label: String) {
-        val action = compose.onNodeWithTag("flashcard-pager").fetchSemanticsNode().config[androidx.compose.ui.semantics.SemanticsActions.CustomActions].first { it.label == label }
-        compose.runOnIdle { assertTrue(action.action()) }
-        compose.waitForIdle()
     }
     private fun presentForRecording() {
         if (androidx.test.platform.app.InstrumentationRegistry.getArguments().getString("experienceRecording") == "true") {
@@ -79,80 +118,65 @@ class CaptionFlashcardExperienceTest {
             Thread.sleep(1500)
         }
     }
-    @Test fun flashcardsTriggerAlignsWithHeadingAndPracticePreservesVocabulary() {
-        seedWords()
-        val before = compose.runOnIdle { ArchiveCodec.encode(vm.archive) }
+    @Test fun flashcardsTriggerAlignsWithHeadingAndPracticeUsesSentenceFlashcards() {
+        seedSentenceCards()
         val title = compose.onNodeWithText("Your words.").fetchSemanticsNode().boundsInRoot
         val trigger = compose.onNodeWithTag("open-flashcards").fetchSemanticsNode().boundsInRoot
         assertTrue(trigger.left >= title.right)
         assertEquals(title.center.y, trigger.center.y, 5f)
         compose.onNodeWithTag("open-flashcards").performClick()
-        position("1 of 2")
+        compose.onNodeWithTag("sentence-flashcards-modal").assertIsDisplayed()
+        compose.onNodeWithTag("sentence-card-front", useUnmergedTree = true).assertIsDisplayed()
         presentForRecording()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput {
-            swipe(center, center.copy(x = center.x - width * .08f), durationMillis = 300)
-        }
-        position("1 of 2")
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeRight() }
-        position("1 of 2")
-        compose.onNodeWithTag("flashcard-progress").assertDoesNotExist()
-        compose.onNodeWithTag("flashcard-meaning", useUnmergedTree = true).assertDoesNotExist()
-        val word = compose.onAllNodesWithTag("flashcard-word", useUnmergedTree = true).onFirst().fetchSemanticsNode().config[SemanticsProperties.Text].single().text
-        val level = compose.onAllNodesWithTag("flashcard-proficiency", useUnmergedTree = true).onFirst().fetchSemanticsNode().boundsInRoot
-        assertTrue(level.height > 0)
-        compose.onAllNodesWithTag("reveal-flashcard").onFirst().performClick()
-        compose.onAllNodesWithTag("flashcard-meaning", useUnmergedTree = true).onFirst().assertIsDisplayed()
+        compose.onNodeWithTag("flip-sentence-card").performClick()
+        compose.onNodeWithTag("sentence-card-back", useUnmergedTree = true).assertIsDisplayed()
         capture("flashcards-revealed")
-        presentForRecording()
-        compose.onNodeWithTag("reveal-flashcard").performClick()
-        compose.onNodeWithTag("flashcard-meaning", useUnmergedTree = true).assertDoesNotExist()
-        presentForRecording()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeLeft() }
-        position("2 of 2")
-        presentForRecording()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeLeft() }
-        position("2 of 2")
-        compose.onNodeWithTag("flashcard-meaning", useUnmergedTree = true).assertDoesNotExist()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeUp() }
-        position("2 of 2")
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeDown() }
-        compose.onNodeWithTag("flashcards-modal").assertIsDisplayed()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeRight() }
-        position("1 of 2")
-        compose.onAllNodesWithTag("flashcard-word", useUnmergedTree = true).onFirst().assertTextEquals(word)
-        compose.onNodeWithTag("flashcard-meaning", useUnmergedTree = true).assertDoesNotExist()
-        accessibleMove("Next word")
-        position("2 of 2")
-        accessibleMove("Previous word")
-        position("1 of 2")
-        compose.onNodeWithTag("close-flashcards").performClick()
+        compose.onNodeWithTag("close-sentence-flashcards").performClick()
         compose.onNodeWithTag("words-screen").assertIsDisplayed()
-        compose.runOnIdle { assertEquals(before, ArchiveCodec.encode(vm.archive)) }
     }
-    @Test fun emptyWordsKeepPracticeDisabledAndSearchDoesNotShrinkTheDeck() {
+    @Test fun emptySentenceCardsKeepPracticeDisabledEvenWithLegacyWordsAndSearchDoesNotShrinkDeck() {
+        compose.runOnIdle {
+            state("sentenceCards", emptyList<SentenceCard>())
+            state("archive", vm.archive.copy(sessions = mutableListOf(legacyWordSample("ru", "книга", "book"))))
+        }
         compose.onNodeWithTag("tab-words").performClick()
         compose.onNodeWithTag("open-flashcards").assertIsNotEnabled()
-        seedWords()
+        compose.onNodeWithTag("words-empty-state").assertIsDisplayed()
+        seedSentenceCards()
         compose.onNodeWithTag("open-flashcards").assertIsEnabled()
+        compose.onNodeWithTag("topic-deck-Cycling").assertDoesNotExist()
         compose.onNode(hasSetTextAction()).performTextInput("кофе")
-        compose.onNodeWithText("книга").assertDoesNotExist()
+        compose.onNodeWithTag("topic-deck-Reading").assertDoesNotExist()
+        compose.onNodeWithTag("topic-deck-Cafe").assertIsDisplayed()
         compose.onNodeWithTag("open-flashcards").performClick()
-        position("1 of 2")
+        compose.onNodeWithText("Card 1 of 2").assertIsDisplayed()
     }
-    @Test fun longMeaningScrollsWithoutChangingCards() {
+    @Test fun longExplanationScrollsInsideSentenceCardWithoutClosingModal() {
         compose.runOnIdle {
-            val meaning = "Used when a person wants to do something now, such as meeting a friend for coffee. It expresses a wish or preference in a relaxed conversation."
-            state("archive", vm.archive.copy(sessions = mutableListOf(sample("ru", "книга", meaning), sample("ru", "кофе", "coffee"))))
+            val longExplanation = "Used when a person wants to do something now, such as meeting a friend for coffee. ".repeat(4)
+            state(
+                "sentenceCards",
+                listOf(
+                    SentenceCard(
+                        id = "ru-long-1",
+                        topic = "Cafe",
+                        languageID = "ru",
+                        frontText = "أريد شرب القهوة مع صديقي الآن.",
+                        backText = "Я хочу выпить кофе с другом.",
+                        explanation = longExplanation,
+                        userOriginalMistake = "Я хочу пить кофе.",
+                        nextReviewDate = System.currentTimeMillis() - 1000L,
+                    ),
+                ),
+            )
         }
         compose.onNodeWithTag("tab-words").performClick()
         compose.onNodeWithTag("open-flashcards").performClick()
-        compose.onNodeWithTag("reveal-flashcard").performClick()
-        val meaning = compose.onNodeWithTag("flashcard-meaning", useUnmergedTree = true)
-        meaning.assertExists()
-        compose.onNodeWithTag("flashcard-pager").performTouchInput { swipeUp() }
-        position("1 of 2")
-        compose.onNodeWithTag("flashcards-modal").assertIsDisplayed()
-        compose.onNodeWithTag("close-flashcards").assertIsDisplayed()
+        compose.onNodeWithTag("flip-sentence-card").performClick()
+        compose.onNodeWithTag("sentence-card-explanation", useUnmergedTree = true).assertExists()
+        compose.onNodeWithTag("sentence-flashcard-face").performTouchInput { swipeUp() }
+        compose.onNodeWithTag("sentence-flashcards-modal").assertIsDisplayed()
+        compose.onNodeWithTag("close-sentence-flashcards").assertIsDisplayed()
     }
     private fun offset(tag: String): Float = compose.onNodeWithTag(tag).fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
     @Test fun targetAndMeaningFollowPauseForStreamingAndResumeWithNextCaption() {

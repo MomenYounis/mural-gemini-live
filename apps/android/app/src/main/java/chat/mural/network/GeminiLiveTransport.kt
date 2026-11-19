@@ -392,8 +392,7 @@ internal class GeminiLiveTransport private constructor(
                     return // Never replay a tool side effect.
                 }
                 if (attempt.seenTools.size > 256) { fail(attempt, "This Gemini conversation reached its tool limit. Start a new conversation."); return }
-                val request = message.args.geminiString("request")
-                if (message.name != GeminiLiveProtocol.TOOL_NAME || request.isNullOrBlank() || request.length > 4_000 || message.args.keys != setOf("request") || attempt.pendingTools.size >= 8) {
+                if (!isValidToolCall(message.name, message.args) || attempt.pendingTools.size >= 8) {
                     val response = GeminiLiveProtocol.toolResult(message.id, message.name, "This teaching request is unavailable or invalid.")
                     rememberToolResult(attempt, message.id, response); sendNow(attempt, response); return
                 }
@@ -471,6 +470,35 @@ internal class GeminiLiveTransport private constructor(
     private fun rememberToolResult(attempt: Attempt, id: String, response: JsonObject) {
         attempt.completedTools[id] = attempt.socketEpoch to response
         while (attempt.completedTools.size > 16) attempt.completedTools.remove(attempt.completedTools.keys.first())
+    }
+
+    private fun isValidToolCall(name: String, args: JsonObject): Boolean = when (name) {
+        GeminiLiveProtocol.TOOL_NAME -> {
+            val request = args.geminiString("request")
+            args.keys == setOf("request") && !request.isNullOrBlank() && request.length <= 4_000
+        }
+        GeminiLiveProtocol.LEARNING_PHRASES_TOOL_NAME -> {
+            val allowedKeys = setOf("topic", "query", "limit")
+            if (!args.keys.all { it in allowedKeys }) {
+                false
+            } else {
+                val topicValid = args["topic"].let { el ->
+                    el == null || el == JsonNull || (el is JsonPrimitive && el.isString && el.content.length <= 200)
+                }
+                val queryValid = args["query"].let { el ->
+                    el == null || el == JsonNull || (el is JsonPrimitive && el.isString && el.content.length <= 200)
+                }
+                val limitValid = args["limit"].let { el ->
+                    el == null || el == JsonNull || (
+                        el is JsonPrimitive &&
+                            !el.isString &&
+                            (el.intOrNull != null || el.doubleOrNull?.let { it.isFinite() && it % 1.0 == 0.0 } == true)
+                        )
+                }
+                topicValid && queryValid && limitValid
+            }
+        }
+        else -> false
     }
 
     private fun networkFailed(attempt: Attempt, code: Int?) {

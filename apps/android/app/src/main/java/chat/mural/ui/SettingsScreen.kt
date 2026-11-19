@@ -1,20 +1,17 @@
 package chat.mural.ui
 
 import android.view.WindowManager
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -52,6 +49,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.password
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -63,8 +61,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
+import chat.mural.core.CEFR_LEVELS
 import chat.mural.core.LanguageRegistry
 import chat.mural.core.AIVendor
+import chat.mural.core.LearnerMemory
 import chat.mural.core.MeaningLanguages
 import chat.mural.core.MinuteBalanceTime
 import chat.mural.core.Passage
@@ -96,6 +96,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     var showTeachingModelPicker by remember { mutableStateOf(false) }
     var sourceDialog by rememberSaveable { mutableStateOf(false) }
     var pendingSource by rememberSaveable { mutableStateOf<chat.mural.core.ConversationProvider?>(null) }
+    var memoryEditDialog by remember { mutableStateOf<MemoryEditRequest?>(null) }
+    var confirmClearMemory by rememberSaveable { mutableStateOf(false) }
     var switchBalance by remember { mutableStateOf<Long?>(null) }
     var checkingSwitch by remember { mutableStateOf(false) }
     var switchTicket by remember { mutableIntStateOf(0) }
@@ -135,7 +137,7 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
 
     Column(Modifier.fillMaxSize()) {
         val title = when (page) {
-            "interests" -> stringResource(R.string.settings_interests_label)
+            "memory" -> "Memory & ${vm.language.name} Level"
             "data" -> stringResource(R.string.settings_learning_data)
             "key" -> keyTitle
             "about" -> stringResource(R.string.settings_about)
@@ -179,9 +181,20 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                 vm.updatePreferences(prefs.copy(meaningLanguage = it))
                             }
                             SettingsDivider()
-                            SettingsRow(stringResource(R.string.settings_interests_label), prefs.interests.take(24),
-                                enabled = !vm.isRunning, chevron = true, modifier = Modifier.testTag("settings-interests"),
-                                onClick = { page = "interests" })
+                            val activeMemory = vm.activeLearnerMemory
+                            val memorySummary = buildList {
+                                if (activeMemory.effectiveLevel.isNotEmpty()) add(activeMemory.effectiveLevel)
+                                val noteCount = activeMemory.profileFacts.size + activeMemory.interestsAndGoals.size
+                                if (noteCount > 0) add("$noteCount ${if (noteCount == 1) "note" else "notes"}")
+                            }.joinToString(" · ")
+                            SettingsRow(
+                                "Memory & ${vm.language.name} Level",
+                                memorySummary,
+                                enabled = !vm.isRunning,
+                                chevron = true,
+                                modifier = Modifier.testTag("settings-memory"),
+                                onClick = { page = "memory" },
+                            )
                             Text(stringResource(R.string.settings_corrections_note), style = MaterialTheme.typography.bodySmall,
                                 color = MuralColors.Secondary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
                         }
@@ -309,20 +322,223 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                         }
                     }
                 }
-                "interests" -> item {
-                    SettingsGroup(footer = stringResource(R.string.settings_interests_note)) {
-                        BasicTextField(value = prefs.interests,
-                            onValueChange = { vm.updatePreferences(prefs.copy(interests = it.take(500))) },
-                            enabled = !vm.isRunning,
-                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MuralColors.Ink),
-                            cursorBrush = SolidColor(MuralColors.Secondary), minLines = 3, maxLines = 10,
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp)
-                                .padding(16.dp).testTag("settings-interests-input"),
-                            decorationBox = { field ->
-                                if (prefs.interests.isEmpty()) Text(stringResource(R.string.settings_interests_placeholder),
-                                    color = MuralColors.Secondary.copy(alpha = .7f))
-                                field()
-                            })
+                "memory" -> {
+                    val mem = vm.activeLearnerMemory
+                    val autoLevelLabel = if (mem.estimatedLevel.isNotEmpty()) {
+                        "Auto (detected: ${mem.estimatedLevel})"
+                    } else {
+                        "Auto (detect from calls)"
+                    }
+                    val selectedLevel = mem.manualLevelOverride ?: "AUTO"
+                    val displayedLevel = mem.manualLevelOverride ?: autoLevelLabel
+                    val levelOptions = listOf("AUTO" to autoLevelLabel) + CEFR_LEVELS.map { it to it }
+
+                    item {
+                        SettingsGroup(
+                            title = "Adaptation & Level",
+                            footer = "Stored locally on this phone per language. Manual level selection overrides automatic detection.",
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .testTag("memory-auto-update-switch")
+                                    .toggleable(
+                                        value = mem.autoUpdateEnabled,
+                                        enabled = !vm.isRunning,
+                                        role = Role.Switch,
+                                        onValueChange = { vm.setLearnerMemoryAutoUpdate(it) },
+                                    )
+                                    .heightIn(min = 52.dp)
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Auto-update memory after calls", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                                Switch(
+                                    checked = mem.autoUpdateEnabled,
+                                    onCheckedChange = null,
+                                    enabled = !vm.isRunning,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = MuralColors.Secondary,
+                                        uncheckedThumbColor = Color.White,
+                                        uncheckedTrackColor = MuralColors.Secondary.copy(alpha = .18f),
+                                        uncheckedBorderColor = Color.Transparent,
+                                    ),
+                                )
+                            }
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "${vm.language.name} Level",
+                                value = displayedLevel,
+                                selected = selectedLevel,
+                                options = levelOptions,
+                                tag = "memory-level-picker",
+                                enabled = !vm.isRunning,
+                            ) { choice ->
+                                vm.setLearnerManualLevel(if (choice == "AUTO") null else choice)
+                            }
+                        }
+                    }
+
+                    item {
+                        SettingsGroup(title = "About You (Profile)") {
+                            if (mem.profileFacts.isEmpty()) {
+                                Text(
+                                    "No profile facts yet (e.g., name, job, studies, city).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MuralColors.Secondary,
+                                    modifier = Modifier.padding(16.dp),
+                                )
+                            } else {
+                                mem.profileFacts.forEachIndexed { idx, fact ->
+                                    if (idx > 0) SettingsDivider()
+                                    MemoryItemRow(
+                                        text = fact,
+                                        enabled = !vm.isRunning,
+                                        editTag = "memory-profile-item-$idx",
+                                        deleteTag = "memory-delete-profile-$idx",
+                                        onEdit = { memoryEditDialog = MemoryEditRequest.ProfileFact(idx, fact) },
+                                        onDelete = { vm.deleteProfileFact(idx) },
+                                    )
+                                }
+                            }
+                            SettingsDivider()
+                            SettingsRow(
+                                title = "+ Add profile fact",
+                                enabled = !vm.isRunning && mem.profileFacts.size < LearnerMemory.MAX_PROFILE_FACTS,
+                                modifier = Modifier.testTag("memory-add-profile-fact"),
+                                onClick = { memoryEditDialog = MemoryEditRequest.ProfileFact(null, "") },
+                            )
+                        }
+                    }
+
+                    item {
+                        SettingsGroup(title = "Interests & Goals") {
+                            if (mem.interestsAndGoals.isEmpty()) {
+                                Text(
+                                    "No interests or learning goals saved yet.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MuralColors.Secondary,
+                                    modifier = Modifier.padding(16.dp),
+                                )
+                            } else {
+                                mem.interestsAndGoals.forEachIndexed { idx, interest ->
+                                    if (idx > 0) SettingsDivider()
+                                    MemoryItemRow(
+                                        text = interest,
+                                        enabled = !vm.isRunning,
+                                        editTag = "memory-interest-item-$idx",
+                                        deleteTag = "memory-delete-interest-$idx",
+                                        onEdit = { memoryEditDialog = MemoryEditRequest.InterestOrGoal(idx, interest) },
+                                        onDelete = { vm.deleteInterestOrGoal(idx) },
+                                    )
+                                }
+                            }
+                            SettingsDivider()
+                            SettingsRow(
+                                title = "+ Add interest or goal",
+                                enabled = !vm.isRunning && mem.interestsAndGoals.size < LearnerMemory.MAX_INTERESTS_AND_GOALS,
+                                modifier = Modifier.testTag("memory-add-interest"),
+                                onClick = { memoryEditDialog = MemoryEditRequest.InterestOrGoal(null, "") },
+                            )
+                        }
+                    }
+
+                    item {
+                        SettingsGroup(
+                            title = "Speaking Adaptation & Weaknesses",
+                            footer = "Guides sentence length, vocabulary simplicity, pace, and focus areas during calls.",
+                        ) {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .testTag("memory-edit-speaking-guidance")
+                                    .clickable(enabled = !vm.isRunning) {
+                                        memoryEditDialog = MemoryEditRequest.SpeakingGuidance(mem.speakingGuidance)
+                                    }
+                                    .padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Text(
+                                    mem.speakingGuidance.ifBlank {
+                                        "Tap to add guidance (e.g., speak calmly, keep sentences concise, practice past tense)."
+                                    },
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = if (mem.speakingGuidance.isBlank()) MuralColors.Secondary else MuralColors.Ink,
+                                )
+                            }
+                        }
+                    }
+
+                    item {
+                        SettingsGroup(
+                            title = "Recent Topics",
+                            footer = "Helps Mural open free conversations with fresh topics without repeating recent calls.",
+                        ) {
+                            if (mem.recentTopics.isEmpty()) {
+                                Text(
+                                    "Recent conversation topics will appear after your calls.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MuralColors.Secondary,
+                                    modifier = Modifier.padding(16.dp),
+                                )
+                            } else {
+                                mem.recentTopics.forEachIndexed { idx, topicMem ->
+                                    if (idx > 0) SettingsDivider()
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text(topicMem.topic, style = MaterialTheme.typography.titleSmall)
+                                            if (topicMem.oneLineSummary.isNotBlank()) {
+                                                Text(
+                                                    topicMem.oneLineSummary,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MuralColors.Secondary,
+                                                )
+                                            }
+                                            if (topicMem.followUpHint.isNotBlank()) {
+                                                Text(
+                                                    "Follow-up: ${topicMem.followUpHint}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MuralColors.Secondary,
+                                                )
+                                            }
+                                            Text(
+                                                formatEpochMillis(topicMem.dateMillis),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MuralColors.Secondary.copy(alpha = .75f),
+                                            )
+                                        }
+                                        SoftRoundButton(
+                                            symbol = MuralSymbol.Trash,
+                                            description = "Remove ${topicMem.topic}",
+                                            onClick = { vm.deleteRecentTopic(idx) },
+                                            enabled = !vm.isRunning,
+                                            diameter = 34.dp,
+                                            tint = Color(0xFFFDECE9),
+                                            modifier = Modifier.testTag("memory-delete-recent-topic-$idx"),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    item {
+                        SettingsGroup {
+                            SettingsRow(
+                                title = "Clear Memory",
+                                enabled = !vm.isRunning && (mem.hasContent() || !mem.autoUpdateEnabled || mem.manualLevelOverride != null),
+                                tint = MuralColors.Red,
+                                modifier = Modifier.testTag("memory-clear-all"),
+                                onClick = { confirmClearMemory = true },
+                            )
+                        }
                     }
                 }
                 "data" -> item {
@@ -524,6 +740,142 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
             onDismiss = { showTeachingModelPicker = false },
         )
     }
+    memoryEditDialog?.let { req ->
+        MemoryEditDialog(
+            request = req,
+            onSave = { value ->
+                when (req) {
+                    is MemoryEditRequest.ProfileFact -> vm.upsertProfileFact(req.index, value)
+                    is MemoryEditRequest.InterestOrGoal -> vm.upsertInterestOrGoal(req.index, value)
+                    is MemoryEditRequest.SpeakingGuidance -> vm.updateSpeakingGuidance(value)
+                }
+                memoryEditDialog = null
+            },
+            onDismiss = { memoryEditDialog = null },
+        )
+    }
+    if (confirmClearMemory) {
+        ConfirmDialog(
+            title = "Clear ${vm.language.name} memory?",
+            message = "Remove saved profile facts, interests, speaking guidance, and recent topics for ${vm.language.name}? Conversations and sentence flashcards remain intact.",
+            confirm = "Clear Memory",
+            onConfirm = {
+                vm.clearLearnerMemory()
+                confirmClearMemory = false
+            },
+            onDismiss = { confirmClearMemory = false },
+        )
+    }
+}
+
+private sealed interface MemoryEditRequest {
+    data class ProfileFact(val index: Int?, val initial: String) : MemoryEditRequest
+    data class InterestOrGoal(val index: Int?, val initial: String) : MemoryEditRequest
+    data class SpeakingGuidance(val initial: String) : MemoryEditRequest
+}
+
+@Composable
+private fun MemoryItemRow(
+    text: String,
+    enabled: Boolean,
+    editTag: String,
+    deleteTag: String,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .testTag(editTag)
+            .clickable(enabled = enabled, onClick = onEdit)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (enabled) MuralColors.Ink else MuralColors.Secondary,
+            modifier = Modifier.weight(1f),
+        )
+        SoftRoundButton(
+            symbol = MuralSymbol.Trash,
+            description = "Remove $text",
+            onClick = onDelete,
+            enabled = enabled,
+            diameter = 34.dp,
+            tint = Color(0xFFFDECE9),
+            modifier = Modifier.testTag(deleteTag),
+        )
+    }
+}
+
+@Composable
+private fun MemoryEditDialog(
+    request: MemoryEditRequest,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val maxChars = when (request) {
+        is MemoryEditRequest.SpeakingGuidance -> LearnerMemory.MAX_SPEAKING_GUIDANCE_CHARS
+        else -> LearnerMemory.MAX_FACT_CHARS
+    }
+    val initial = when (request) {
+        is MemoryEditRequest.ProfileFact -> request.initial
+        is MemoryEditRequest.InterestOrGoal -> request.initial
+        is MemoryEditRequest.SpeakingGuidance -> request.initial
+    }
+    val title = when (request) {
+        is MemoryEditRequest.ProfileFact -> if (request.index == null) "Add profile fact" else "Edit profile fact"
+        is MemoryEditRequest.InterestOrGoal -> if (request.index == null) "Add interest or goal" else "Edit interest or goal"
+        is MemoryEditRequest.SpeakingGuidance -> "Speaking adaptation & weaknesses"
+    }
+    val placeholder = when (request) {
+        is MemoryEditRequest.ProfileFact -> "e.g., Computer science student in Cairo"
+        is MemoryEditRequest.InterestOrGoal -> "e.g., Backend engineering, chess, fluent tech interviews"
+        is MemoryEditRequest.SpeakingGuidance -> "e.g., Speak calmly, keep turns concise, remind about past tense"
+    }
+    var value by remember(request) { mutableStateOf(initial) }
+    val allowSave = when (request) {
+        is MemoryEditRequest.SpeakingGuidance -> true
+        else -> value.isNotBlank()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MuralTextField(
+                    value = value,
+                    onValueChange = { value = it.take(maxChars) },
+                    modifier = Modifier.fillMaxWidth().testTag("memory-edit-dialog-input"),
+                    minLines = if (request is MemoryEditRequest.SpeakingGuidance) 3 else 1,
+                    maxLines = if (request is MemoryEditRequest.SpeakingGuidance) 6 else 3,
+                    label = { Text(placeholder) },
+                )
+                Text(
+                    "${value.length}/$maxChars",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MuralColors.Secondary,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(value.trim()) },
+                enabled = allowSave,
+                modifier = Modifier.testTag("memory-edit-dialog-save"),
+            ) {
+                Text(stringResource(R.string.common_save))
+            }
+        },
+        dismissButton = {
+            MuralTextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
 }
 
 private fun issueLabel(kind: ProviderFailureKind, context: android.content.Context): String = context.getString(when (kind) {

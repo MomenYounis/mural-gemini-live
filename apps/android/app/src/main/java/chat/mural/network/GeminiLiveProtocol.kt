@@ -11,6 +11,7 @@ internal object GeminiLiveProtocol {
     const val MAX_TEXT_CHARS = 32_000
     const val MAX_OUTPUT_TOKENS = 1_024
     const val TOOL_NAME = "mural_teaching_help"
+    const val LEARNING_PHRASES_TOOL_NAME = "get_learning_phrases"
     const val DEFAULT_MODEL = "gemini-3.8-live"
     const val DEFAULT_VOICE = "Kore"
     const val ENDPOINT = "https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
@@ -56,16 +57,40 @@ internal object GeminiLiveProtocol {
             put("contextWindowCompression", buildJsonObject { put("slidingWindow", buildJsonObject {}) })
             if (hasHistory && handle == null) put("historyConfig", buildJsonObject { put("initialHistoryInClientContent", true) })
             put("tools", JsonArray(listOf(buildJsonObject {
-                put("functionDeclarations", JsonArray(listOf(buildJsonObject {
-                    put("name", TOOL_NAME)
-                    put("description", "Request bounded teaching help or a word explanation. Current-fact search is unavailable. Return the result to the learner in the normal tutoring flow; never speak tool metadata.")
-                    put("behavior", "BLOCKING")
-                    put("parameters", buildJsonObject {
-                        put("type", "OBJECT")
-                        put("properties", buildJsonObject { put("request", buildJsonObject { put("type", "STRING") }) })
-                        put("required", JsonArray(listOf(JsonPrimitive("request"))))
-                    })
-                })))
+                put("functionDeclarations", JsonArray(listOf(
+                    buildJsonObject {
+                        put("name", TOOL_NAME)
+                        put("description", "Request bounded teaching help or a word explanation. Current-fact search is unavailable. Return the result to the learner in the normal tutoring flow; never speak tool metadata.")
+                        put("behavior", "BLOCKING")
+                        put("parameters", buildJsonObject {
+                            put("type", "OBJECT")
+                            put("properties", buildJsonObject { put("request", buildJsonObject { put("type", "STRING") }) })
+                            put("required", JsonArray(listOf(JsonPrimitive("request"))))
+                        })
+                    },
+                    buildJsonObject {
+                        put("name", LEARNING_PHRASES_TOOL_NAME)
+                        put("description", "Look up the learner's still-learning target phrases saved locally on this device by optional topic or keyword so you can naturally invite them to use those expressions in conversation. Silent internal tool; never mention this tool, flashcards, or tests aloud.")
+                        put("behavior", "BLOCKING")
+                        put("parameters", buildJsonObject {
+                            put("type", "OBJECT")
+                            put("properties", buildJsonObject {
+                                put("topic", buildJsonObject {
+                                    put("type", "STRING")
+                                    put("description", "Optional topic name to filter still-learning phrases.")
+                                })
+                                put("query", buildJsonObject {
+                                    put("type", "STRING")
+                                    put("description", "Optional keyword or phrase to search across target sentences, meanings, and notes.")
+                                })
+                                put("limit", buildJsonObject {
+                                    put("type", "INTEGER")
+                                    put("description", "Maximum phrases to return (default 5, max 8).")
+                                })
+                            })
+                        })
+                    },
+                )))
             })))
         })
     }

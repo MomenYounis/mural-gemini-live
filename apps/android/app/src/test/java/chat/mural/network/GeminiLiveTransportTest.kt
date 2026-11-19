@@ -208,6 +208,23 @@ class GeminiLiveTransportTest {
         h.stop()
     }
 
+    @Test fun getLearningPhrasesToolCallPassesValidationWhileInvalidArgsAreRejectedLocally() = runTest {
+        val h = Harness(this); h.ready()
+        val valid = """{"toolCall":{"functionCalls":[{"id":"phrases-1","name":"get_learning_phrases","args":{"topic":"Travel","limit":4}},{"id":"phrases-empty","name":"get_learning_phrases","args":{}}]}}"""
+        val invalid = """{"toolCall":{"functionCalls":[{"id":"bad-key","name":"get_learning_phrases","args":{"unknown":"x"}},{"id":"bad-tool","name":"other_tool","args":{}}]}}"""
+        h.socket.receive(valid)
+        h.socket.receive(invalid)
+        runCurrent()
+        val emitted = h.events.filterIsInstance<LiveEvent.ToolCall>()
+        assertEquals(listOf("phrases-1", "phrases-empty"), emitted.map { it.id })
+        assertTrue(h.transport.send(LiveOperation.ToolResult("phrases-1", "get_learning_phrases", """{"count":1}""")))
+        assertTrue(h.transport.send(LiveOperation.ToolResult("phrases-empty", "get_learning_phrases", """{"count":0}""")))
+        runCurrent()
+        assertEquals(2, h.socket.sent.count { it.contains("unavailable or invalid") })
+        assertTrue(h.socket.sent.any { it.contains("phrases-1") && it.contains("count") })
+        h.stop()
+    }
+
     @Test fun toolCancellationAndTimeoutRejectLateResults() = runTest {
         val h = Harness(this); h.ready()
         h.socket.receive("""{"toolCall":{"functionCalls":[{"id":"a","name":"mural_teaching_help","args":{"request":"Explain"}},{"id":"b","name":"mural_teaching_help","args":{"request":"Explain again"}}]}}""")

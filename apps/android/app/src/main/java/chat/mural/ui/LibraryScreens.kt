@@ -1,46 +1,41 @@
 package chat.mural.ui
 
-import androidx.annotation.StringRes
-import androidx.compose.ui.text.style.TextOverflow
-import kotlinx.coroutines.launch
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.itemsIndexed
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,41 +44,35 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.semantics.CustomAccessibilityAction
-import androidx.compose.ui.semantics.customActions
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import chat.mural.MuralViewModel
 import chat.mural.R
-import chat.mural.core.ConversationTheme
-import chat.mural.core.FinalAssessmentRecovery
 import chat.mural.core.AIVendor
+import chat.mural.core.ConversationTheme
+import chat.mural.core.PracticedPhrase
 import chat.mural.core.ReviewRating
 import chat.mural.core.SentenceCard
+import chat.mural.core.SessionDeletionImpact
 import chat.mural.core.SessionMistake
 import chat.mural.core.SessionReport
 import chat.mural.core.Sm2Calculator
 import chat.mural.core.TopicBrief
 import chat.mural.core.TopicDeck
-import chat.mural.core.WordState
-import chat.mural.core.nowSeconds
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -232,8 +221,8 @@ fun WordsScreen(vm: MuralViewModel) {
     var search by rememberSaveable { mutableStateOf("") }
     var activeDeckTitle by rememberSaveable { mutableStateOf<String?>(null) }
     var activeDeckCards by remember { mutableStateOf<List<SentenceCard>?>(null) }
-    var selectedWord by remember { mutableStateOf<WordState?>(null) }
-    var legacyFlashcards by remember { mutableStateOf<chat.mural.core.FlashcardDeck?>(null) }
+    var deckToDelete by remember { mutableStateOf<TopicDeck?>(null) }
+    var reportToDelete by remember { mutableStateOf<SessionReport?>(null) }
 
     val now = System.currentTimeMillis()
     val allDecks = vm.topicDecks
@@ -246,9 +235,9 @@ fun WordsScreen(vm: MuralViewModel) {
                     it.explanation.contains(search, ignoreCase = true)
             }
     }
-    val languageCards = vm.sentenceCards
+    val languageCards = vm.activeLanguageSentenceCards
     val dueCards = languageCards.filter { it.isDue(now) }.sortedBy { it.nextReviewDate }
-    val reports = vm.sessionReports
+    val reports = vm.activeLanguageSessionReports
 
     LazyColumn(
         Modifier.fillMaxSize().testTag("words-screen").padding(horizontal = 22.dp),
@@ -276,11 +265,9 @@ fun WordsScreen(vm: MuralViewModel) {
                                 val practiceList = if (dueCards.isNotEmpty()) dueCards else languageCards
                                 activeDeckTitle = if (dueCards.isNotEmpty()) "Due Review (${dueCards.size})" else "All Sentence Cards"
                                 activeDeckCards = practiceList
-                            } else if (vm.learner.words.isNotEmpty()) {
-                                legacyFlashcards = chat.mural.core.FlashcardDeck(vm.learner.words, vm.language.id)
                             }
                         },
-                        enabled = languageCards.isNotEmpty() || vm.learner.words.isNotEmpty(),
+                        enabled = languageCards.isNotEmpty(),
                         modifier = Modifier.testTag("open-flashcards"),
                     )
                 }
@@ -366,22 +353,23 @@ fun WordsScreen(vm: MuralViewModel) {
                         activeDeckTitle = deck.topic
                         activeDeckCards = orderedCards
                     },
+                    onDelete = { deckToDelete = deck },
                 )
             }
-        } else if (vm.learner.words.isEmpty()) {
+        } else {
             item {
-                Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Sage) {
+                Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Sage, modifier = Modifier.testTag("words-empty-state")) {
                     Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         MuralIcon(MuralSymbol.Leaf, Modifier.size(34.dp), color = MuralColors.Secondary)
                         Text(
-                            if (search.isBlank()) "No sentence decks yet." else stringResource(R.string.words_empty_title_search),
+                            if (search.isBlank()) "No sentence decks yet." else "No matching sentence decks.",
                             style = MaterialTheme.typography.headlineMedium,
                         )
                         Text(
                             if (search.isBlank()) {
                                 "Finish a live voice conversation to get a Post-Session Mistake Report and automatically build SM-2 sentence flashcard decks by topic."
                             } else {
-                                stringResource(R.string.words_empty_subtitle_search)
+                                "Try another topic, translation, or target sentence."
                             },
                             color = MuralColors.Secondary,
                         )
@@ -411,7 +399,7 @@ fun WordsScreen(vm: MuralViewModel) {
                     Row(
                         Modifier.padding(18.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(report.topic, style = MaterialTheme.typography.titleMedium)
@@ -420,6 +408,19 @@ fun WordsScreen(vm: MuralViewModel) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MuralColors.Secondary,
                             )
+                        }
+                        if (report.practicedPhrases.isNotEmpty()) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Color(0xFFE7F6EC),
+                            ) {
+                                Text(
+                                    "${report.practicedPhrases.size} used",
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFF14532D),
+                                )
+                            }
                         }
                         Surface(
                             shape = CircleShape,
@@ -432,40 +433,15 @@ fun WordsScreen(vm: MuralViewModel) {
                                 color = MuralColors.Ink,
                             )
                         }
+                        SoftRoundButton(
+                            symbol = MuralSymbol.Trash,
+                            description = "Delete flashcards for ${report.topic}",
+                            onClick = { reportToDelete = report },
+                            diameter = 38.dp,
+                            tint = Color(0xFFFDECE9),
+                            modifier = Modifier.testTag("delete-session-cards-${report.sessionID}"),
+                        )
                         MuralIcon(MuralSymbol.ChevronRight, Modifier.size(18.dp), color = MuralColors.Secondary)
-                    }
-                }
-            }
-        }
-
-        // Preserve legacy words fallback if the user has existing words in their archive
-        val legacyWords = vm.learner.words.filter {
-            search.isBlank() || it.lemma.contains(search, true) || it.meaning.contains(search, true)
-        }
-        if (legacyWords.isNotEmpty()) {
-            item {
-                Text(
-                    "ARCHIVED VOCABULARY",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MuralColors.Secondary,
-                    modifier = Modifier.padding(top = 10.dp),
-                )
-            }
-            items(legacyWords, key = { it.id }) { word ->
-                Surface(
-                    Modifier.fillMaxWidth().clickable { selectedWord = word },
-                    shape = RoundedCornerShape(20.dp),
-                    color = MuralColors.Surface,
-                ) {
-                    Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(word.lemma, style = MaterialTheme.typography.titleLarge)
-                            Text(word.meaning, color = MuralColors.Secondary)
-                        }
-                        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                            RecallBars(word.bars)
-                            Text(wordLabel(word.label), style = MaterialTheme.typography.labelSmall, color = MuralColors.Secondary)
-                        }
                     }
                 }
             }
@@ -485,12 +461,57 @@ fun WordsScreen(vm: MuralViewModel) {
             },
         )
     }
-    legacyFlashcards?.let { FlashcardsDialog(it, onDismiss = { legacyFlashcards = null }) }
-    selectedWord?.let { word -> WordDialog(word, onRemove = { vm.hideWord(word.id); selectedWord = null }, onDismiss = { selectedWord = null }) }
+
+    deckToDelete?.let { deck ->
+        AlertDialog(
+            onDismissRequest = { deckToDelete = null },
+            modifier = Modifier.testTag("confirm-delete-topic-deck-dialog"),
+            title = { Text("Delete topic deck?") },
+            text = {
+                Text(
+                    "Delete \"${deck.topic}\" (${deck.totalCount} ${if (deck.totalCount == 1) "flashcard" else "flashcards"}) for ${vm.language.name}? Your past conversations stay in Settings > Past conversations.",
+                )
+            },
+            confirmButton = {
+                MuralTextButton(
+                    onClick = {
+                        vm.deleteTopicDeck(deck.topic)
+                        deckToDelete = null
+                    },
+                    modifier = Modifier.testTag("confirm-delete-topic-deck-button"),
+                ) {
+                    Text(stringResource(R.string.common_delete), color = MuralColors.Red)
+                }
+            },
+            dismissButton = {
+                MuralTextButton(onClick = { deckToDelete = null }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
+
+    reportToDelete?.let { report ->
+        val impact = vm.sessionFlashcardDeletionImpact(report.sessionID)
+        DeleteSessionCardsDialog(
+            report = report,
+            impact = impact,
+            onConfirm = { alsoRemoveReport ->
+                vm.deleteSessionFlashcards(report.sessionID, alsoDeleteReport = alsoRemoveReport)
+                reportToDelete = null
+            },
+            onDismiss = { reportToDelete = null },
+        )
+    }
 }
 
 @Composable
-private fun TopicDeckCard(deck: TopicDeck, colorIndex: Int, onClick: () -> Unit) {
+private fun TopicDeckCard(
+    deck: TopicDeck,
+    colorIndex: Int,
+    onClick: () -> Unit,
+    onDelete: () -> Unit,
+) {
     val panelColor = MuralColors.Panels[colorIndex % MuralColors.Panels.size]
     Surface(
         modifier = Modifier
@@ -503,7 +524,7 @@ private fun TopicDeckCard(deck: TopicDeck, colorIndex: Int, onClick: () -> Unit)
         Row(
             Modifier.padding(18.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Surface(
                 modifier = Modifier.size(48.dp),
@@ -533,9 +554,80 @@ private fun TopicDeckCard(deck: TopicDeck, colorIndex: Int, onClick: () -> Unit)
                     color = MuralColors.Ink,
                 )
             }
+            SoftRoundButton(
+                symbol = MuralSymbol.Trash,
+                description = "Delete ${deck.topic} deck",
+                onClick = onDelete,
+                diameter = 38.dp,
+                tint = Color(0xFFFDECE9),
+                modifier = Modifier.testTag("delete-topic-deck-${deck.topic}"),
+            )
             MuralIcon(MuralSymbol.ChevronRight, Modifier.size(18.dp), color = MuralColors.Secondary)
         }
     }
+}
+
+@Composable
+internal fun DeleteSessionCardsDialog(
+    report: SessionReport,
+    impact: SessionDeletionImpact,
+    onConfirm: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var alsoRemoveReport by remember(report.id) { mutableStateOf(false) }
+    val deleteSummary = when {
+        impact.deletedCardCount > 0 && impact.unlinkedSharedCardCount > 0 ->
+            "This will delete ${impact.deletedCardCount} ${if (impact.deletedCardCount == 1) "flashcard" else "flashcards"} from \"${report.topic}\" and keep ${impact.unlinkedSharedCardCount} shared ${if (impact.unlinkedSharedCardCount == 1) "card" else "cards"} also linked to other conversations."
+        impact.deletedCardCount > 0 ->
+            "This will delete ${impact.deletedCardCount} ${if (impact.deletedCardCount == 1) "flashcard" else "flashcards"} created from \"${report.topic}\"."
+        impact.unlinkedSharedCardCount > 0 ->
+            "All ${impact.unlinkedSharedCardCount} ${if (impact.unlinkedSharedCardCount == 1) "flashcard" else "flashcards"} from \"${report.topic}\" also belong to other conversations, so they will only be unlinked from this conversation."
+        else ->
+            "No saved flashcards currently belong to \"${report.topic}\"."
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("delete-session-cards-dialog"),
+        title = { Text("Delete conversation flashcards?") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(deleteSummary)
+                Text(
+                    "Your conversation transcript in Settings > Past conversations will never be deleted.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MuralColors.Secondary,
+                )
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { alsoRemoveReport = !alsoRemoveReport }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Checkbox(
+                        checked = alsoRemoveReport,
+                        onCheckedChange = { alsoRemoveReport = it },
+                        modifier = Modifier.testTag("delete-session-also-remove-report"),
+                    )
+                    Text("Also remove this session report", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        confirmButton = {
+            MuralTextButton(
+                onClick = { onConfirm(alsoRemoveReport) },
+                modifier = Modifier.testTag("confirm-delete-session-cards-button"),
+            ) {
+                Text(stringResource(R.string.common_delete), color = MuralColors.Red)
+            }
+        },
+        dismissButton = {
+            MuralTextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -549,12 +641,13 @@ internal fun SentenceFlashcardsDialog(
     var cards by remember(initialCards) { mutableStateOf(initialCards) }
     var currentIndex by remember(initialCards) { mutableStateOf(0) }
     var revealed by remember(currentIndex, cards.getOrNull(currentIndex)?.id) { mutableStateOf(false) }
+    var cardPendingDelete by remember { mutableStateOf<SentenceCard?>(null) }
 
     val currentCard = cards.getOrNull(currentIndex)
     val flipAngle by androidx.compose.animation.core.animateFloatAsState(
         targetValue = if (revealed) 180f else 0f,
         animationSpec = androidx.compose.animation.core.tween(
-            if (android.animation.ValueAnimator.areAnimatorsEnabled()) 420 else 0
+            if (android.animation.ValueAnimator.areAnimatorsEnabled()) 420 else 0,
         ),
         label = "sentence-card-flip",
     )
@@ -580,16 +673,27 @@ internal fun SentenceFlashcardsDialog(
                 Row(
                     Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(deckTitle, style = MaterialTheme.typography.titleLarge)
-                        if (cards.isNotEmpty()) {
+                        if (cards.isNotEmpty() && currentCard != null) {
                             Text(
                                 "Card ${currentIndex + 1} of ${cards.size}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MuralColors.Secondary,
                             )
                         }
+                    }
+                    if (currentCard != null) {
+                        SoftRoundButton(
+                            symbol = MuralSymbol.Trash,
+                            description = "Delete flashcard",
+                            onClick = { cardPendingDelete = currentCard },
+                            diameter = 42.dp,
+                            tint = Color(0xFFFDECE9),
+                            modifier = Modifier.testTag("delete-current-sentence-card"),
+                        )
                     }
                     SoftRoundButton(
                         MuralSymbol.Close,
@@ -647,7 +751,7 @@ internal fun SentenceFlashcardsDialog(
                         Column(
                             Modifier
                                 .fillMaxWidth()
-                                .verticalScroll(androidx.compose.foundation.rememberScrollState())
+                                .verticalScroll(rememberScrollState())
                                 .padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -683,7 +787,6 @@ internal fun SentenceFlashcardsDialog(
                             }
 
                             if (!showingBack) {
-                                // FRONT: Arabic meaning prompting the user to produce the English sentence
                                 Spacer(Modifier.height(16.dp))
                                 Text(
                                     "ARABIC PROMPT",
@@ -698,7 +801,7 @@ internal fun SentenceFlashcardsDialog(
                                 )
                                 Spacer(Modifier.height(8.dp))
                                 Text(
-                                    "Say or think of the natural English sentence, then tap to flip.",
+                                    "Say or think of the natural target sentence, then tap to flip.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MuralColors.Secondary,
                                     textAlign = TextAlign.Center,
@@ -710,9 +813,8 @@ internal fun SentenceFlashcardsDialog(
                                     Text("Show English Correction")
                                 }
                             } else {
-                                // BACK: English correction + Local On-Device TTS speaker + Explanation + Original Mistake
                                 Text(
-                                    "CORRECT ENGLISH",
+                                    "CORRECT TARGET SENTENCE",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = Color(0xFF1F6E3D),
                                 )
@@ -734,7 +836,7 @@ internal fun SentenceFlashcardsDialog(
                                         )
                                         SoftRoundButton(
                                             symbol = MuralSymbol.Speaker,
-                                            description = "Pronounce English correction",
+                                            description = "Pronounce correction",
                                             onClick = { tts.speak(currentCard.backText) },
                                             tint = Color.White,
                                             diameter = 44.dp,
@@ -758,7 +860,7 @@ internal fun SentenceFlashcardsDialog(
                                             Text(
                                                 currentCard.userOriginalMistake,
                                                 style = MaterialTheme.typography.bodyMedium.copy(
-                                                    textDecoration = TextDecoration.LineThrough
+                                                    textDecoration = TextDecoration.LineThrough,
                                                 ),
                                                 color = MuralColors.Red,
                                             )
@@ -828,7 +930,7 @@ internal fun SentenceFlashcardsDialog(
                                                 currentIndex += 1
                                                 revealed = false
                                             } else {
-                                                currentIndex = cards.size // signals completion
+                                                currentIndex = cards.size
                                             }
                                         },
                                     shape = RoundedCornerShape(18.dp),
@@ -858,6 +960,36 @@ internal fun SentenceFlashcardsDialog(
             }
         }
     }
+
+    cardPendingDelete?.let { cardToDelete ->
+        AlertDialog(
+            onDismissRequest = { cardPendingDelete = null },
+            modifier = Modifier.testTag("confirm-delete-sentence-card-dialog"),
+            title = { Text("Delete this flashcard?") },
+            text = { Text("Remove \"${cardToDelete.backText}\" from your SM-2 flashcard deck?") },
+            confirmButton = {
+                MuralTextButton(
+                    onClick = {
+                        tts.stop()
+                        vm.deleteSentenceCard(cardToDelete.id)
+                        val remaining = cards.filterNot { it.id == cardToDelete.id }
+                        cards = remaining
+                        revealed = false
+                        currentIndex = if (remaining.isEmpty()) 0 else currentIndex.coerceAtMost(remaining.lastIndex)
+                        cardPendingDelete = null
+                    },
+                    modifier = Modifier.testTag("confirm-delete-sentence-card-button"),
+                ) {
+                    Text(stringResource(R.string.common_delete), color = MuralColors.Red)
+                }
+            },
+            dismissButton = {
+                MuralTextButton(onClick = { cardPendingDelete = null }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -869,6 +1001,8 @@ fun PostSessionReportDialog(
     val report = vm.activeSessionReport
     val analyzing = vm.analyzingSessionReport
     val error = vm.sessionReportError
+    var showDeleteSessionDialog by remember(report?.id) { mutableStateOf(false) }
+    var mistakeIndexToDelete by remember(report?.id) { mutableStateOf<Int?>(null) }
 
     Dialog(
         onDismissRequest = { tts.stop(); onDismiss() },
@@ -891,6 +1025,7 @@ fun PostSessionReportDialog(
                     Row(
                         Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
@@ -902,6 +1037,16 @@ fun PostSessionReportDialog(
                                 report?.topic ?: "Session Analysis",
                                 style = MaterialTheme.typography.headlineMedium,
                                 modifier = Modifier.semantics { heading() },
+                            )
+                        }
+                        if (report != null && !analyzing) {
+                            SoftRoundButton(
+                                symbol = MuralSymbol.Trash,
+                                description = "Delete flashcards for this conversation",
+                                onClick = { showDeleteSessionDialog = true },
+                                diameter = 40.dp,
+                                tint = Color(0xFFFDECE9),
+                                modifier = Modifier.testTag("report-delete-session-cards"),
                             )
                         }
                         SoftRoundButton(
@@ -983,6 +1128,15 @@ fun PostSessionReportDialog(
                 }
 
                 if (report != null) {
+                    if (report.practicedPhrases.isNotEmpty()) {
+                        item {
+                            PracticedPhrasesSection(
+                                phrases = report.practicedPhrases,
+                                onSpeak = { tts.speak(it) },
+                            )
+                        }
+                    }
+
                     if (report.mistakes.isEmpty() && !analyzing) {
                         item {
                             Surface(
@@ -1006,6 +1160,7 @@ fun PostSessionReportDialog(
                                 index = idx + 1,
                                 mistake = mistake,
                                 onSpeakCorrection = { tts.speak(mistake.correction) },
+                                onDelete = { mistakeIndexToDelete = idx },
                             )
                         }
                     }
@@ -1026,6 +1181,128 @@ fun PostSessionReportDialog(
             }
         }
     }
+
+    if (showDeleteSessionDialog && report != null) {
+        val impact = vm.sessionFlashcardDeletionImpact(report.sessionID)
+        DeleteSessionCardsDialog(
+            report = report,
+            impact = impact,
+            onConfirm = { alsoRemoveReport ->
+                vm.deleteSessionFlashcards(report.sessionID, alsoDeleteReport = alsoRemoveReport)
+                showDeleteSessionDialog = false
+            },
+            onDismiss = { showDeleteSessionDialog = false },
+        )
+    }
+
+    val pendingMistakeIdx = mistakeIndexToDelete
+    if (pendingMistakeIdx != null && report != null && pendingMistakeIdx in report.mistakes.indices) {
+        val targetMistake = report.mistakes[pendingMistakeIdx]
+        AlertDialog(
+            onDismissRequest = { mistakeIndexToDelete = null },
+            modifier = Modifier.testTag("confirm-delete-report-mistake-dialog"),
+            title = { Text("Remove this flashcard & fix?") },
+            text = {
+                Text(
+                    "Remove \"${targetMistake.correction}\" from this session report and unlink/delete its sentence flashcard for this conversation?",
+                )
+            },
+            confirmButton = {
+                MuralTextButton(
+                    onClick = {
+                        vm.deleteMistakeFromReport(report.id, pendingMistakeIdx)
+                        mistakeIndexToDelete = null
+                    },
+                    modifier = Modifier.testTag("confirm-delete-report-mistake-button"),
+                ) {
+                    Text(stringResource(R.string.common_delete), color = MuralColors.Red)
+                }
+            },
+            dismissButton = {
+                MuralTextButton(onClick = { mistakeIndexToDelete = null }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun PracticedPhrasesSection(
+    phrases: List<PracticedPhrase>,
+    onSpeak: (String) -> Unit,
+) {
+    Surface(
+        Modifier.fillMaxWidth().testTag("practiced-phrases-section"),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFFE7F6EC),
+    ) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                MuralIcon(MuralSymbol.Check, Modifier.size(20.dp), color = Color(0xFF1F6E3D))
+                Text(
+                    "Phrases Used Successfully",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color(0xFF14532D),
+                    modifier = Modifier.weight(1f),
+                )
+                Surface(shape = CircleShape, color = Color.White.copy(alpha = .8f)) {
+                    Text(
+                        "SM-2 +1",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color(0xFF1F6E3D),
+                    )
+                }
+            }
+            Text(
+                "You naturally used ${phrases.size} learning ${if (phrases.size == 1) "phrase" else "phrases"} in context — review intervals advanced automatically.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF1F6E3D),
+            )
+            phrases.forEachIndexed { idx, item ->
+                Surface(
+                    Modifier.fillMaxWidth().testTag("practiced-phrase-item-${idx + 1}"),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color.White.copy(alpha = .82f),
+                ) {
+                    Row(
+                        Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (item.phrase.isNotBlank()) {
+                                Text(
+                                    item.phrase,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color(0xFF14532D),
+                                )
+                            }
+                            Text(
+                                "“${item.userQuote}”",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MuralColors.Secondary,
+                            )
+                        }
+                        if (item.phrase.isNotBlank()) {
+                            SoftRoundButton(
+                                symbol = MuralSymbol.Speaker,
+                                description = "Pronounce practiced phrase",
+                                onClick = { onSpeak(item.phrase) },
+                                tint = Color(0xFFE7F6EC),
+                                diameter = 36.dp,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1041,6 +1318,7 @@ private fun MistakeReportCard(
     index: Int,
     mistake: SessionMistake,
     onSpeakCorrection: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     Surface(
         Modifier.fillMaxWidth().testTag("mistake-card-$index"),
@@ -1048,6 +1326,26 @@ private fun MistakeReportCard(
         color = MuralColors.Surface,
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "FIX #$index",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MuralColors.Secondary,
+                    modifier = Modifier.weight(1f),
+                )
+                SoftRoundButton(
+                    symbol = MuralSymbol.Trash,
+                    description = "Delete fix #$index",
+                    onClick = onDelete,
+                    diameter = 34.dp,
+                    tint = Color(0xFFFDECE9),
+                    modifier = Modifier.testTag("delete-report-mistake-$index"),
+                )
+            }
+
             // 1. User said (highlighted in red with strikethrough)
             Surface(
                 Modifier.fillMaxWidth(),
@@ -1124,31 +1422,6 @@ private fun MistakeReportCard(
     }
 }
 
-@Composable
-private fun WordDialog(word: WordState, onRemove: () -> Unit, onDismiss: () -> Unit) {
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Surface) {
-            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
-                Text(word.lemma, style = MaterialTheme.typography.headlineLarge)
-                if (word.id.startsWith("zh|")) PinyinHelp(word.lemma)
-                Text(word.meaning, style = MaterialTheme.typography.titleLarge, color = MuralColors.Secondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    RecallBars(word.bars); Text(wordLabel(word.label))
-                }
-                Text(stringResource(wordExplanationRes(word)))
-                Surface(shape = RoundedCornerShape(18.dp), color = MuralColors.Peach) { Text(stringResource(R.string.words_example_quote, word.example), Modifier.padding(17.dp)) }
-                Text(
-                    "${pluralStringResource(R.plurals.words_independent_uses, word.independentCount, word.independentCount)} · ${stringResource(R.string.words_last_seen, formatDate(word.lastSeen))}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MuralColors.Secondary,
-                )
-                MuralTextButton(onClick = onRemove) { Text(stringResource(R.string.words_remove_button), color = MuralColors.Red) }
-                MuralTextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.words_done_button)) }
-            }
-        }
-    }
-}
-
 internal fun formatDate(secondsSince2001: Double): String = runCatching {
     val unix = (secondsSince2001 + chat.mural.core.APPLE_EPOCH_UNIX_SECONDS).toLong()
     DateTimeFormatter.ofPattern("d MMM yyyy").format(Instant.ofEpochSecond(unix).atZone(ZoneId.systemDefault()))
@@ -1168,23 +1441,6 @@ private fun categoryLabel(value: String) = when (value) {
     else -> value
 }
 
-@StringRes
-internal fun wordExplanationRes(word: WordState): Int = when {
-    word.independentCount == 0 -> R.string.words_explanation_supported
-    word.bars == 1 -> R.string.words_explanation_recalled_once
-    word.bars == 2 -> R.string.words_explanation_recalled_days
-    else -> R.string.words_explanation_steady
-}
-
-@Composable
-private fun wordLabel(value: String) = when (value) {
-    "New" -> stringResource(R.string.words_recall_new)
-    "Fragile" -> stringResource(R.string.words_recall_fragile)
-    "Growing" -> stringResource(R.string.words_recall_growing)
-    "Steady" -> stringResource(R.string.words_recall_steady)
-    else -> value
-}
-
 private fun themeSymbol(id: String) = when (id) {
     "coffee" -> MuralSymbol.Coffee
     "weekend" -> MuralSymbol.Sun
@@ -1194,127 +1450,4 @@ private fun themeSymbol(id: String) = when (id) {
     "books" -> MuralSymbol.Words
     "today", "travel", "travelstories" -> MuralSymbol.Globe
     else -> MuralSymbol.Sparkles
-}
-
-
-@Composable
-internal fun FlashcardsDialog(deck: chat.mural.core.FlashcardDeck, onDismiss: () -> Unit) {
-    val density = LocalDensity.current.density
-    var selection by remember { mutableStateOf(0) }
-    var advancing by remember { mutableStateOf(false) }
-    val offset = remember { androidx.compose.animation.core.Animatable(0f) }
-    var cardWidth by remember { mutableStateOf(1000f) }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val previous = stringResource(R.string.flashcards_previous)
-    val next = stringResource(R.string.flashcards_next)
-    val position = stringResource(R.string.flashcards_progress, selection + 1, deck.words.size)
-    fun move(direction: Int) {
-        if (advancing) return
-        scope.launch {
-            val destination = deck.destination(selection, direction)
-            if (destination == selection) {
-                offset.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .82f))
-                return@launch
-            }
-            advancing = true
-            try {
-                if (android.animation.ValueAnimator.areAnimatorsEnabled()) {
-                    offset.animateTo(if (direction > 0) -cardWidth * 1.2f else cardWidth * 1.2f,
-                        androidx.compose.animation.core.tween(200))
-                }
-                selection = destination
-                offset.snapTo(0f)
-            } finally { advancing = false }
-        }
-    }
-    Dialog(onDismissRequest = onDismiss, properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxWidth().padding(16.dp).heightIn(max = 620.dp).testTag("flashcards-modal"),
-            shape = RoundedCornerShape(32.dp), color = MuralColors.Cream) {
-            Column(Modifier.padding(vertical = 20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.words_title), style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                    SoftRoundButton(MuralSymbol.Close, stringResource(R.string.common_close), onDismiss, modifier = Modifier.testTag("close-flashcards"))
-                }
-                if (deck.words.isEmpty()) {
-                    Text(stringResource(R.string.flashcards_empty), Modifier.padding(24.dp))
-                } else {
-                    Box(Modifier.weight(1f).fillMaxWidth().testTag("flashcard-pager")
-                        .onSizeChanged { cardWidth = it.width.toFloat() }
-                        .semantics {
-                            stateDescription = position
-                            customActions = buildList {
-                                if (selection > 0) add(CustomAccessibilityAction(previous) { move(-1); true })
-                                if (selection < deck.words.lastIndex) add(CustomAccessibilityAction(next) { move(1); true })
-                            }
-                        }) {
-                        val destination = deck.destination(selection, if (offset.value > 0) -1 else 1)
-                        if (destination != selection) {
-                            Flashcard(deck.words[destination], selected = false, preview = true, showContent = kotlin.math.abs(offset.value) > 6 * density,
-                                modifier = Modifier.graphicsLayer {
-                                    val scale = .94f + (kotlin.math.abs(offset.value) / cardWidth).coerceIn(0f, 1f) * .06f
-                                    scaleX = scale; scaleY = scale; translationY = 12.dp.toPx(); alpha = .7f
-                                }.clearAndSetSemantics {})
-                        }
-                        Flashcard(deck.words[selection], selected = true, modifier = Modifier.graphicsLayer {
-                            translationX = offset.value
-                            rotationZ = if (android.animation.ValueAnimator.areAnimatorsEnabled()) offset.value / cardWidth * 12f else 0f
-                        }.pointerInput(selection) {
-                            val velocity = androidx.compose.ui.input.pointer.util.VelocityTracker()
-                            detectHorizontalDragGestures(
-                                onDragStart = { velocity.resetTracking() },
-                                onDragEnd = {
-                                    val fling = kotlin.math.abs(offset.value) > cardWidth * .08f && kotlin.math.abs(velocity.calculateVelocity().x) > 800.dp.toPx()
-                                    if (kotlin.math.abs(offset.value) > cardWidth * .22f || fling) move(if (offset.value < 0) 1 else -1)
-                                    else scope.launch { offset.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .82f)) }
-                                },
-                                onDragCancel = { if (!advancing) scope.launch { offset.animateTo(0f, androidx.compose.animation.core.spring(dampingRatio = .82f)) } },
-                                onHorizontalDrag = { change, amount ->
-                                    if (!advancing) {
-                                        velocity.addPosition(change.uptimeMillis, change.position)
-                                        change.consume()
-                                        scope.launch {
-                                            val candidate = offset.value + amount
-                                            val target = deck.destination(selection, if (candidate < 0) 1 else -1)
-                                            offset.snapTo(if (target == selection) candidate * .2f else candidate)
-                                        }
-                                    }
-                                })
-                        })
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Flashcard(word: WordState, selected: Boolean, modifier: Modifier = Modifier, preview: Boolean = false, showContent: Boolean = true) {
-    androidx.compose.runtime.key(word.id) { FlashcardFace(word, selected, modifier, preview, showContent) }
-}
-
-@Composable
-private fun FlashcardFace(word: WordState, selected: Boolean, modifier: Modifier, preview: Boolean, showContent: Boolean) {
-    var revealed by remember(word.id) { mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(selected) { revealed = false }
-    val angle by androidx.compose.animation.core.animateFloatAsState(if (revealed) 180f else 0f,
-        animationSpec = androidx.compose.animation.core.tween(if (android.animation.ValueAnimator.areAnimatorsEnabled()) 480 else 0), label = "card flip")
-    val back = angle >= 90f
-    val reveal = stringResource(if (back) R.string.flashcards_hide else R.string.flashcards_reveal)
-    Surface(Modifier.fillMaxSize().then(modifier).padding(horizontal = 20.dp, vertical = 4.dp).graphicsLayer {
-        rotationY = if (back) angle - 180f else angle
-        cameraDistance = 12 * density
-    }, shape = RoundedCornerShape(28.dp), color = MuralColors.Surface) {
-        Column(Modifier.graphicsLayer { alpha = if (showContent) 1f else 0f }.verticalScroll(androidx.compose.foundation.rememberScrollState()).clickable(enabled = !preview, onClickLabel = reveal) { revealed = !revealed }
-            .padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(26.dp, Alignment.CenterVertically)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag(if (preview) "flashcard-preview-proficiency" else "flashcard-proficiency")) {
-                RecallBars(word.bars); Text(wordLabel(word.label), color = MuralColors.Secondary, style = MaterialTheme.typography.bodyMedium)
-            }
-            Text(word.lemma, style = MaterialTheme.typography.headlineLarge, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.testTag(if (preview) "flashcard-preview-word" else "flashcard-word"))
-            if (back) {
-                Text(word.meaning, style = MaterialTheme.typography.titleLarge, color = MuralColors.Secondary,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.testTag("flashcard-meaning"))
-            }
-            if (!preview) MuralTextButton(onClick = { revealed = !revealed }, modifier = Modifier.testTag("reveal-flashcard")) { Text(reveal) }
-        }
-    }
 }

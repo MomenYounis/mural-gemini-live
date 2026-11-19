@@ -25,6 +25,7 @@ class SettingsParityTest {
     private var original: Preferences? = null
     private var originalProvider: ConversationProvider? = null
     private var originalVendor: AIVendor? = null
+    private var originalMemories: Map<String, chat.mural.core.LearnerMemory> = emptyMap()
 
     @Before fun setup() {
         vm = compose.awaitHistoryLoaded()
@@ -32,11 +33,15 @@ class SettingsParityTest {
             original = vm.archive.preferences.copy()
             originalProvider = vm.conversationProvider
             originalVendor = vm.aiVendor
+            originalMemories = vm.learnerMemories
             vm.updatePreferences(original!!.copy(hasOnboarded = true, learningLanguageID = "es", meaningVisible = true, meaningLanguage = "English"))
         }
         compose.onNodeWithTag("tab-settings").performClick()
     }
+    @Suppress("UNCHECKED_CAST")
     @After fun restore() { original?.let { prefs -> compose.runOnIdle {
+        val field = MuralViewModel::class.java.getDeclaredField("learnerMemories\$delegate").apply { isAccessible = true }
+        (field.get(vm) as androidx.compose.runtime.MutableState<Map<String, chat.mural.core.LearnerMemory>>).value = originalMemories
         vm.updatePreferences(prefs)
         vm.selectConversationProvider(ConversationProvider.PERSONAL_KEY)
         originalVendor?.let(vm::selectAIVendor)
@@ -111,16 +116,24 @@ class SettingsParityTest {
         val settings = compose.onNodeWithTag("settings-screen")
         settings.performScrollToNode(hasTestTag("settings-conversation-access"))
         capture("06-large-advanced")
-        settings.performScrollToNode(hasTestTag("settings-interests"))
-        compose.onNodeWithTag("settings-interests").performClick()
-        compose.onNodeWithTag("settings-interests-input").performTextInput("Music, food, and a little travel.")
+        settings.performScrollToNode(hasTestTag("settings-memory"))
+        compose.onNodeWithTag("settings-memory").performClick()
+        compose.onNodeWithTag("memory-auto-update-switch").assertIsDisplayed()
+        compose.onNodeWithTag("memory-level-picker").assertIsDisplayed()
+        settings.performScrollToNode(hasTestTag("memory-add-interest"))
+        compose.onNodeWithTag("memory-add-interest").performClick()
+        compose.onNodeWithTag("memory-edit-dialog-input").performTextInput("Music, food, and a little travel.")
         compose.waitUntil(5_000) {
             compose.runOnUiThread {
                 ViewCompat.getRootWindowInsets(compose.activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
             }
         }
-        compose.onNodeWithTag("settings-interests-input").assertIsDisplayed()
+        compose.onNodeWithTag("memory-edit-dialog-input").assertIsDisplayed()
         capture("07-large-keyboard")
-        compose.runOnIdle { assertTrue(vm.archive.preferences.interests.contains("Music, food")) }
+        compose.onNodeWithTag("memory-edit-dialog-save").performClick()
+        compose.runOnIdle {
+            assertTrue(vm.activeLearnerMemory.interestsAndGoals.any { it.contains("Music, food") })
+            assertTrue(vm.archive.preferences.interests.contains("Music, food"))
+        }
     }
 }

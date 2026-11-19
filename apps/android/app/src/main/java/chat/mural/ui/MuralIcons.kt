@@ -18,7 +18,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 
 enum class MuralSymbol { Flashcards, Wave, Themes, Words, Settings, Mic, MicOff, Captions, Transcript, End,
-    Keyboard, Sparkles, ArrowUp, ChevronDown, Back, Search, Close, Check, Leaf, ChevronRight, Coffee, Globe, Sun, Food, Music, Speaker }
+    Keyboard, Sparkles, ArrowUp, ChevronDown, Back, Search, Close, Check, Leaf, ChevronRight, Coffee, Globe, Sun, Food, Music, Speaker, Trash }
 
 /** Original, consistently weighted artwork; no platform-dependent text glyphs. */
 @Composable
@@ -100,6 +100,19 @@ fun MuralIcon(symbol: MuralSymbol, modifier: Modifier = Modifier, color: Color =
                     }
                     path { moveTo(16.5f, 8.5f); quadraticTo(19f, 12f, 16.5f, 15.5f) }
                     path { moveTo(19f, 6f); quadraticTo(22.5f, 12f, 19f, 18f) }
+                }
+                MuralSymbol.Trash -> {
+                    line(4f, 6f, 20f, 6f)
+                    path { moveTo(9f, 6f); lineTo(9f, 4f); lineTo(15f, 4f); lineTo(15f, 6f) }
+                    path {
+                        moveTo(6f, 6f); lineTo(7f, 19f)
+                        quadraticTo(7.2f, 20.5f, 8.8f, 20.5f)
+                        lineTo(15.2f, 20.5f)
+                        quadraticTo(16.8f, 20.5f, 17f, 19f)
+                        lineTo(18f, 6f)
+                    }
+                    line(10f, 10f, 10f, 16.5f)
+                    line(14f, 10f, 14f, 16.5f)
                 }
             }
         }

@@ -22,7 +22,15 @@ class GeminiLiveProtocolTest {
         assertFalse(setup.containsKey("thinkingConfig"))
         assertFalse(setup.containsKey("proactivity"))
         assertFalse(setup.toString().contains("store"))
-        assertEquals("BLOCKING", setup["tools"]!!.jsonArray.single().jsonObject["functionDeclarations"]!!.jsonArray.single().jsonObject["behavior"]!!.jsonPrimitive.content)
+        val declarations = setup["tools"]!!.jsonArray.single().jsonObject["functionDeclarations"]!!.jsonArray
+        assertEquals(2, declarations.size)
+        val byName = declarations.map { it.jsonObject }.associateBy { it["name"]!!.jsonPrimitive.content }
+        assertTrue(byName.containsKey(GeminiLiveProtocol.TOOL_NAME))
+        assertTrue(byName.containsKey(GeminiLiveProtocol.LEARNING_PHRASES_TOOL_NAME))
+        assertEquals("BLOCKING", byName.getValue(GeminiLiveProtocol.TOOL_NAME)["behavior"]!!.jsonPrimitive.content)
+        assertEquals("BLOCKING", byName.getValue(GeminiLiveProtocol.LEARNING_PHRASES_TOOL_NAME)["behavior"]!!.jsonPrimitive.content)
+        val phraseParams = byName.getValue(GeminiLiveProtocol.LEARNING_PHRASES_TOOL_NAME)["parameters"]!!.jsonObject["properties"]!!.jsonObject
+        assertEquals(setOf("topic", "query", "limit"), phraseParams.keys)
     }
 
     @Test fun historyMapsAssistantToModelAndDoesNotGenerate() {
@@ -85,8 +93,16 @@ class GeminiLiveProtocolTest {
     }
 
     @Test fun everyToolCallCancellationResumptionAndGoAwayIsDecoded() {
-        val calls = GeminiLiveProtocol.decode("""{"toolCall":{"functionCalls":[{"id":"a","name":"mural_teaching_help","args":{"request":"explain"}},{"id":"b","name":"bad","args":{}}]}}""")
-        assertEquals(2, calls.size)
+        val calls = GeminiLiveProtocol.decode("""{"toolCall":{"functionCalls":[{"id":"a","name":"mural_teaching_help","args":{"request":"explain"}},{"id":"b","name":"get_learning_phrases","args":{"topic":"Backend","query":"index","limit":5}},{"id":"c","name":"get_learning_phrases","args":{}}]}}""")
+        assertEquals(3, calls.size)
+        val phraseCall = calls[1] as GeminiLiveProtocol.Message.ToolCall
+        assertEquals("get_learning_phrases", phraseCall.name)
+        assertEquals("Backend", phraseCall.args["topic"]!!.jsonPrimitive.content)
+        assertEquals("index", phraseCall.args["query"]!!.jsonPrimitive.content)
+        assertEquals(5, phraseCall.args["limit"]!!.jsonPrimitive.int)
+        val emptyPhraseCall = calls[2] as GeminiLiveProtocol.Message.ToolCall
+        assertEquals("get_learning_phrases", emptyPhraseCall.name)
+        assertTrue(emptyPhraseCall.args.isEmpty())
         assertEquals(listOf("a", "b"), (GeminiLiveProtocol.decode("""{"toolCallCancellation":{"ids":["a","b"]}}""").single() as GeminiLiveProtocol.Message.ToolCancelled).ids)
         val resume = GeminiLiveProtocol.decode("""{"sessionResumptionUpdate":{"resumable":true,"newHandle":"secret-placeholder"}}""").single()
         assertFalse(resume.toString().contains("secret-placeholder"))
