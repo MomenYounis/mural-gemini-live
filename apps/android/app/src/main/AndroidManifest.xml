@@ -14,6 +14,7 @@
         android:usesCleartextTraffic="false" android:supportsRtl="true">
         <service android:name=".VoiceConversationService" android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback" />
+        <receiver android:name=".reminder.StudyReminderReceiver" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true" android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -1,5 +1,7 @@
 package chat.mural.core
 
+import java.text.Normalizer
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.serialization.SerialName
@@ -7,6 +9,38 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+
+private val APOSTROPHE_LIKE_REGEX = Regex("['\\u2018\\u2019\\u02BC`]")
+private val DASH_LIKE_REGEX = Regex("\\p{Pd}+")
+private val PUNCT_OR_SYMBOL_REGEX = Regex("[\\p{P}\\p{S}\\p{Cf}]+")
+private val MULTI_SPACE_REGEX = Regex("\\s+")
+
+/**
+ * Returns true if [userSaid] and [correction] differ ONLY by capitalization,
+ * punctuation, quotation marks, hyphenation, or whitespace formatting.
+ */
+fun isPunctuationOrFormattingOnlyDiff(userSaid: String, correction: String): Boolean {
+    fun normalizeSpaced(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFC)
+        .lowercase(Locale.ROOT)
+        .replace(APOSTROPHE_LIKE_REGEX, "")
+        .replace(PUNCT_OR_SYMBOL_REGEX, " ")
+        .replace(MULTI_SPACE_REGEX, " ")
+        .trim()
+
+    fun normalizeCollapsedHyphens(text: String): String = Normalizer.normalize(text, Normalizer.Form.NFC)
+        .lowercase(Locale.ROOT)
+        .replace(APOSTROPHE_LIKE_REGEX, "")
+        .replace(DASH_LIKE_REGEX, "")
+        .replace(PUNCT_OR_SYMBOL_REGEX, " ")
+        .replace(MULTI_SPACE_REGEX, " ")
+        .trim()
+
+    val a1 = normalizeSpaced(userSaid)
+    val b1 = normalizeSpaced(correction)
+    if (a1.isEmpty() || b1.isEmpty()) return a1 == b1 && userSaid.trim() == correction.trim()
+    if (a1 == b1) return true
+    return normalizeCollapsedHyphens(userSaid) == normalizeCollapsedHyphens(correction)
+}
 
 @Serializable
 data class SessionMistake(
@@ -20,6 +54,14 @@ data class SessionMistake(
 }
 
 @Serializable
+data class NaturalUpgrade(
+    @SerialName("user_said") val userSaid: String,
+    @SerialName("natural_alternative") val naturalAlternative: String,
+    @SerialName("arabic_meaning") val arabicMeaning: String = "",
+    val explanation: String = "",
+)
+
+@Serializable
 data class PracticedPhrase(
     @SerialName("card_id") val cardID: String,
     val phrase: String = "",
@@ -29,7 +71,9 @@ data class PracticedPhrase(
 @Serializable
 data class PostSessionAnalysisPayload(
     val topic: String,
+    val wins: List<String> = emptyList(),
     val mistakes: List<SessionMistake> = emptyList(),
+    @SerialName("natural_upgrades") val naturalUpgrades: List<NaturalUpgrade> = emptyList(),
     @SerialName("practiced_phrases") val practicedPhrases: List<PracticedPhrase> = emptyList(),
 )
 
@@ -41,8 +85,10 @@ data class SessionReport(
     val date: Long = System.currentTimeMillis(),
     val topic: String,
     val durationMinutes: Int,
+    val wins: List<String> = emptyList(),
     val mistakes: List<SessionMistake> = emptyList(),
     val mistakeCount: Int = mistakes.size,
+    val naturalUpgrades: List<NaturalUpgrade> = emptyList(),
     val practicedPhrases: List<PracticedPhrase> = emptyList(),
     val creditedCardIDs: List<String> = emptyList(),
 )
@@ -133,6 +179,79 @@ object Sm2Calculator {
     )
 
     fun normalizedTopic(topic: String): String = topic.trim().ifEmpty { GENERAL_TOPIC }
+
+    fun isPunctuationOrFormattingOnlyDiff(userSaid: String, correction: String): Boolean =
+        chat.mural.core.isPunctuationOrFormattingOnlyDiff(userSaid, correction)
+
+    fun cleanPostSessionTopic(raw: String, fallback: String = GENERAL_TOPIC): String {
+        val collapsed = raw.replace(MULTI_SPACE_REGEX, " ").trim()
+        if (collapsed.isEmpty()) return normalizedTopic(fallback).take(48)
+        var cleaned = collapsed
+        if (cleaned.length > 40) {
+            val withoutParens = cleaned.replace(Regex("\\s*\\([^)]*\\)\\s*$"), "").trim()
+            if (withoutParens.isNotEmpty()) {
+                cleaned = withoutParens
+            }
+        }
+        cleaned = cleaned.trimEnd(',', ';', ':', '-', '—', ' ')
+        if (cleaned.length > 48) {
+            val cut = cleaned.take(48)
+            val lastSpace = cut.lastIndexOf(' ')
+            cleaned = if (lastSpace >= 16) cut.substring(0, lastSpace) else cut
+            cleaned = cleaned.trimEnd(',', ';', ':', '-', '—', ' ')
+        }
+        return cleaned.ifBlank { normalizedTopic(fallback).take(48) }
+    }
+
+    fun buildDeckPracticeTheme(topic: String): ConversationTheme {
+        val cleanTopic = normalizedTopic(topic)
+        return ConversationTheme(
+            id = "deck:${cleanTopic.lowercase(Locale.ROOT)}",
+            title = cleanTopic,
+            subtitle = "Practice your saved phrases naturally",
+            symbol = "sparkles",
+            category = "Deck Practice",
+            situation = "Focus naturally on the topic \"$cleanTopic\". Create conversational openings and follow-up questions where the learner can express the ideas from their target phrases in context, without ever mentioning flashcards, decks, or tests.",
+            colorIndex = 0,
+        )
+    }
+
+    fun prioritizeDeckCards(
+        cards: List<SentenceCard>,
+        languageID: String,
+        deckTopic: String,
+        nowMillis: Long = System.currentTimeMillis(),
+        limit: Int = 5,
+    ): List<SentenceCard> {
+        val boundedLimit = limit.coerceAtLeast(0)
+        if (boundedLimit == 0) return emptyList()
+        val targetTopic = normalizedTopic(deckTopic)
+        val deckCards = cards.filter {
+            it.languageID == languageID && normalizedTopic(it.topic).equals(targetTopic, ignoreCase = true)
+        }
+        if (deckCards.isEmpty()) return emptyList()
+        return deckCards
+            .sortedWith(
+                compareByDescending<SentenceCard> { isStillLearning(it, nowMillis) }
+                    .thenByDescending { it.isDue(nowMillis) }
+                    .thenBy { it.repetitionCount }
+                    .thenBy { it.easeFactor }
+                    .thenBy { it.nextReviewDate },
+            )
+            .take(boundedLimit)
+    }
+
+    fun hasCardForBackText(
+        cards: List<SentenceCard>,
+        languageID: String,
+        backText: String,
+    ): Boolean {
+        val clean = backText.trim()
+        if (clean.isEmpty()) return false
+        return cards.any {
+            it.languageID == languageID && it.backText.trim().equals(clean, ignoreCase = true)
+        }
+    }
 
     fun cardsForLanguage(cards: List<SentenceCard>, languageID: String): List<SentenceCard> =
         cards.filter { it.languageID == languageID }
@@ -233,7 +352,7 @@ object Sm2Calculator {
         nowMillis: Long = System.currentTimeMillis(),
     ): List<SentenceCard> {
         if (report.mistakes.isEmpty()) return existingCards
-        val topic = normalizedTopic(report.topic)
+        val topic = cleanPostSessionTopic(report.topic)
         val cleanSessionID = report.sessionID.trim()
         val result = existingCards.toMutableList()
         for (mistake in report.mistakes) {
@@ -242,45 +361,101 @@ object Sm2Calculator {
             val userSaid = mistake.userSaid.trim()
             val explanation = mistake.explanation.trim()
             if (correction.isEmpty() || front.isEmpty()) continue
-            val existingIndex = result.indexOfFirst {
-                it.languageID == report.languageID &&
-                    it.backText.trim().equals(correction, ignoreCase = true)
-            }
-            if (existingIndex >= 0) {
-                val existing = result[existingIndex]
-                val mergedSessions = (
-                    existing.allSourceSessionIDs() +
-                        listOfNotNull(cleanSessionID.takeIf { it.isNotEmpty() })
-                    ).distinct()
-                result[existingIndex] = existing.copy(
-                    topic = topic,
-                    sourceSessionID = cleanSessionID.ifEmpty {
-                        existing.sourceSessionID.ifBlank { mergedSessions.lastOrNull().orEmpty() }
-                    },
-                    sourceSessionIDs = mergedSessions,
-                    frontText = front,
-                    backText = correction,
-                    explanation = explanation.ifEmpty { existing.explanation },
-                    userOriginalMistake = userSaid.ifEmpty { existing.userOriginalMistake },
-                )
-            } else {
-                result += SentenceCard(
-                    topic = topic,
-                    languageID = report.languageID,
-                    sourceSessionID = cleanSessionID,
-                    sourceSessionIDs = if (cleanSessionID.isNotEmpty()) listOf(cleanSessionID) else emptyList(),
-                    frontText = front,
-                    backText = correction,
-                    explanation = explanation,
-                    userOriginalMistake = userSaid,
-                    repetitionCount = 0,
-                    easeFactor = DEFAULT_EASE_FACTOR,
-                    intervalDays = 0,
-                    nextReviewDate = nowMillis,
-                )
-            }
+            if (userSaid.isNotEmpty() && isPunctuationOrFormattingOnlyDiff(userSaid, correction)) continue
+            upsertSentenceCard(
+                result = result,
+                topic = topic,
+                languageID = report.languageID,
+                cleanSessionID = cleanSessionID,
+                frontText = front,
+                backText = correction,
+                explanation = explanation,
+                userOriginalMistake = userSaid,
+                nowMillis = nowMillis,
+            )
         }
         return result
+    }
+
+    fun addNaturalUpgradeToCards(
+        existingCards: List<SentenceCard>,
+        report: SessionReport,
+        upgrade: NaturalUpgrade,
+        nowMillis: Long = System.currentTimeMillis(),
+    ): List<SentenceCard> {
+        val naturalAlternative = upgrade.naturalAlternative.trim()
+        val userSaid = upgrade.userSaid.trim()
+        if (naturalAlternative.isEmpty()) return existingCards
+        if (userSaid.isNotEmpty() && isPunctuationOrFormattingOnlyDiff(userSaid, naturalAlternative)) {
+            return existingCards
+        }
+        val front = upgrade.arabicMeaning.trim()
+            .ifBlank { upgrade.explanation.trim() }
+            .ifBlank { naturalAlternative }
+        val explanation = upgrade.explanation.trim().ifBlank { "More natural, native-sounding phrasing." }
+        val result = existingCards.toMutableList()
+        upsertSentenceCard(
+            result = result,
+            topic = cleanPostSessionTopic(report.topic),
+            languageID = report.languageID,
+            cleanSessionID = report.sessionID.trim(),
+            frontText = front,
+            backText = naturalAlternative,
+            explanation = explanation,
+            userOriginalMistake = userSaid,
+            nowMillis = nowMillis,
+        )
+        return result
+    }
+
+    private fun upsertSentenceCard(
+        result: MutableList<SentenceCard>,
+        topic: String,
+        languageID: String,
+        cleanSessionID: String,
+        frontText: String,
+        backText: String,
+        explanation: String,
+        userOriginalMistake: String,
+        nowMillis: Long,
+    ) {
+        val existingIndex = result.indexOfFirst {
+            it.languageID == languageID &&
+                it.backText.trim().equals(backText, ignoreCase = true)
+        }
+        if (existingIndex >= 0) {
+            val existing = result[existingIndex]
+            val mergedSessions = (
+                existing.allSourceSessionIDs() +
+                    listOfNotNull(cleanSessionID.takeIf { it.isNotEmpty() })
+                ).distinct()
+            result[existingIndex] = existing.copy(
+                topic = topic,
+                sourceSessionID = cleanSessionID.ifEmpty {
+                    existing.sourceSessionID.ifBlank { mergedSessions.lastOrNull().orEmpty() }
+                },
+                sourceSessionIDs = mergedSessions,
+                frontText = frontText,
+                backText = backText,
+                explanation = explanation.ifEmpty { existing.explanation },
+                userOriginalMistake = userOriginalMistake.ifEmpty { existing.userOriginalMistake },
+            )
+        } else {
+            result += SentenceCard(
+                topic = topic,
+                languageID = languageID,
+                sourceSessionID = cleanSessionID,
+                sourceSessionIDs = if (cleanSessionID.isNotEmpty()) listOf(cleanSessionID) else emptyList(),
+                frontText = frontText,
+                backText = backText,
+                explanation = explanation,
+                userOriginalMistake = userOriginalMistake,
+                repetitionCount = 0,
+                easeFactor = DEFAULT_EASE_FACTOR,
+                intervalDays = 0,
+                nextReviewDate = nowMillis,
+            )
+        }
     }
 
     fun mergeMistakesIntoCards(

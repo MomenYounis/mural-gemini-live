@@ -174,4 +174,41 @@ class LearnerMemoryTest {
         assertEquals("B2", en.manualLevelOverride)
         assertFalse(en.autoUpdateEnabled)
     }
+
+    @Test
+    fun suggestedTopicsEnforceBoundsFilterSecretsExcludeRecentAndProvideDeterministicFallback() {
+        // Empty memory -> empty fallback suggestions
+        assertTrue(LearnerMemoryReducer.fallbackSuggestedTopics(LearnerMemory()).isEmpty())
+        assertTrue(LearnerMemoryReducer.effectiveSuggestedTopics(LearnerMemory()).isEmpty())
+
+        // Sanitization caps at 3, deduplicates, and filters secrets
+        val dirty = LearnerMemory(
+            interestsAndGoals = listOf("Backend Interviews", "Chess"),
+            recentTopics = listOf(RecentTopicMemory(sessionID = "s-recent", topic = "Recent Topic")),
+            suggestedTopics = listOf(
+                SuggestedTopic(title = "Recent Topic", subtitle = "Should be excluded", situation = "Avoid repeating."),
+                SuggestedTopic(title = "My password is 123", subtitle = "Secret", situation = "Should drop."),
+                SuggestedTopic(title = "API Design Debate", subtitle = "REST vs gRPC", situation = "Debate API trade-offs."),
+                SuggestedTopic(title = "api design debate", subtitle = "Duplicate", situation = "Dup."),
+                SuggestedTopic(title = "Mock Tech Interview", subtitle = "System design", situation = "Roleplay an interviewer.", isRoleplay = true),
+                SuggestedTopic(title = "Chess Opening Ideas", subtitle = "Sicilian defense", situation = "Discuss chess strategy."),
+                SuggestedTopic(title = "Fourth Extra Topic", subtitle = "Overflow", situation = "Should be dropped."),
+            ),
+        )
+        val effective = LearnerMemoryReducer.effectiveSuggestedTopics(dirty)
+        assertEquals(3, effective.size)
+        assertEquals(listOf("API Design Debate", "Mock Tech Interview", "Chess Opening Ideas"), effective.map { it.title })
+        assertTrue(effective[1].toConversationTheme(1).id.startsWith("suggested:"))
+
+        // Fallback generator detects roleplay keywords and excludes recent topics
+        val fallbackMem = LearnerMemory(
+            profileFacts = listOf("CS student in Cairo"),
+            interestsAndGoals = listOf("Backend Interview", "Chess", "Travel"),
+            recentTopics = listOf(RecentTopicMemory(sessionID = "s-1", topic = "Chess")),
+        )
+        val fallbacks = LearnerMemoryReducer.fallbackSuggestedTopics(fallbackMem)
+        assertEquals(3, fallbacks.size)
+        assertFalse(fallbacks.any { it.title.equals("Chess", ignoreCase = true) })
+        assertTrue(fallbacks.any { it.isRoleplay })
+    }
 }

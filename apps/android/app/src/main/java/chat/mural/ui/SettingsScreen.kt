@@ -1,6 +1,12 @@
 package chat.mural.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.view.WindowManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.PaddingValues
@@ -62,6 +68,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
 import chat.mural.core.CEFR_LEVELS
+import chat.mural.core.CoachStyle
 import chat.mural.core.LanguageRegistry
 import chat.mural.core.AIVendor
 import chat.mural.core.LearnerMemory
@@ -72,8 +79,10 @@ import chat.mural.core.SessionRecord
 import chat.mural.core.Speaker
 import chat.mural.core.UsageSummary
 import chat.mural.core.ProviderFailureKind
+import chat.mural.network.GeminiLiveProtocol
 import chat.mural.network.TeachingModelOption
 import chat.mural.network.TeachingProvider
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 @Composable
@@ -104,7 +113,19 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     androidx.compose.runtime.LaunchedEffect(focusAdvanced) {
-        if (focusAdvanced) listState.scrollToItem(4)
+        if (focusAdvanced) listState.scrollToItem(5)
+    }
+    var reminderPermissionDenied by rememberSaveable { mutableStateOf(false) }
+    val reminderPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            reminderPermissionDenied = false
+            vm.setReminderEnabled(true)
+        } else {
+            reminderPermissionDenied = true
+            vm.setReminderEnabled(false)
+        }
     }
     val prefs = vm.archive.preferences
     val usesGemini = vm.aiVendor == AIVendor.GEMINI
@@ -206,6 +227,114 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                             SettingsChoiceRow(stringResource(R.string.settings_conversation_limit), stringResource(R.string.settings_limit_minutes, prefs.sessionMinutes),
                                 prefs.sessionMinutes.toString(), limits.map { it.toString() to stringResource(R.string.settings_limit_minutes, it) },
                                 "settings-conversation-limit", !vm.isRunning) { vm.updatePreferences(prefs.copy(sessionMinutes = it.toInt())) }
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "AI Voice",
+                                value = vm.activeGeminiVoice,
+                                selected = vm.activeGeminiVoice,
+                                options = GeminiLiveProtocol.PREBUILT_VOICES.map { it.name to it.label },
+                                tag = "settings-gemini-voice",
+                                enabled = !vm.isRunning,
+                                onSelect = vm::selectGeminiVoice,
+                            )
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Coach Style",
+                                value = vm.coachStyle.displayName,
+                                selected = vm.coachStyle.name,
+                                options = CoachStyle.entries.map { it.name to it.label },
+                                tag = "settings-coach-style",
+                                enabled = !vm.isRunning,
+                                onSelect = { vm.selectCoachStyle(CoachStyle.fromNameOrDefault(it)) },
+                            )
+                        }
+                    }
+                    item {
+                        val reminder = vm.learningSettings.reminder
+                        val goal = vm.learningSettings.dailyGoal
+                        val reminderHours = listOf(7, 8, 9, 10, 12, 14, 17, 18, 19, 20, 21, 22)
+                        val goalMinutesOptions = listOf(5, 10, 15, 20)
+                        val goalCardsOptions = listOf(5, 10, 15, 20)
+                        SettingsGroup(
+                            title = "Daily Goal & Reminder",
+                            footer = if (reminderPermissionDenied) {
+                                "Allow notifications in phone settings to receive daily reminders."
+                            } else {
+                                "Gentle local reminder only when you haven't practiced yet and have due cards or an open daily goal."
+                            },
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .testTag("settings-daily-reminder-switch")
+                                    .toggleable(
+                                        value = reminder.enabled,
+                                        role = Role.Switch,
+                                        onValueChange = { turnOn ->
+                                            if (!turnOn) {
+                                                reminderPermissionDenied = false
+                                                vm.setReminderEnabled(false)
+                                            } else if (
+                                                Build.VERSION.SDK_INT >= 33 &&
+                                                ContextCompat.checkSelfPermission(
+                                                    context,
+                                                    Manifest.permission.POST_NOTIFICATIONS,
+                                                ) != PackageManager.PERMISSION_GRANTED
+                                            ) {
+                                                reminderPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                            } else {
+                                                reminderPermissionDenied = false
+                                                vm.setReminderEnabled(true)
+                                            }
+                                        },
+                                    )
+                                    .heightIn(min = 52.dp)
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Daily Reminder", Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                                Switch(
+                                    checked = reminder.enabled,
+                                    onCheckedChange = null,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = MuralColors.Secondary,
+                                        uncheckedThumbColor = Color.White,
+                                        uncheckedTrackColor = MuralColors.Secondary.copy(alpha = .18f),
+                                        uncheckedBorderColor = Color.Transparent,
+                                    ),
+                                )
+                            }
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Reminder Time",
+                                value = formatReminderHour(reminder.hour),
+                                selected = reminder.hour.toString(),
+                                options = reminderHours.map { it.toString() to formatReminderHour(it) },
+                                tag = "settings-reminder-hour",
+                                enabled = reminder.enabled,
+                                onSelect = { vm.setReminderHour(it.toInt()) },
+                            )
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Daily Speaking Goal",
+                                value = "${goal.targetSpeakingMinutes} min",
+                                selected = goal.targetSpeakingMinutes.toString(),
+                                options = goalMinutesOptions.map { it.toString() to "$it min" },
+                                tag = "settings-daily-goal-minutes",
+                                enabled = true,
+                                onSelect = { vm.setDailyGoal(it.toInt(), goal.targetCardsReviewed) },
+                            )
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Daily Cards Goal",
+                                value = "${goal.targetCardsReviewed} cards",
+                                selected = goal.targetCardsReviewed.toString(),
+                                options = goalCardsOptions.map { it.toString() to "$it cards" },
+                                tag = "settings-daily-goal-cards",
+                                enabled = true,
+                                onSelect = { vm.setDailyGoal(goal.targetSpeakingMinutes, it.toInt()) },
+                            )
                         }
                     }
                     item {
@@ -1196,4 +1325,15 @@ private fun CorrectionDialog(passage: Passage, onSave: (String) -> Unit, onDismi
         confirmButton = { Button(onClick = { onSave(text.trim()) }, enabled = text.isNotBlank()) { Text(stringResource(R.string.common_save)) } },
         dismissButton = { MuralTextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
+}
+
+private fun formatReminderHour(hour: Int): String {
+    val cleanHour = hour.coerceIn(0, 23)
+    val displayHour = when {
+        cleanHour == 0 -> 12
+        cleanHour > 12 -> cleanHour - 12
+        else -> cleanHour
+    }
+    val period = if (cleanHour < 12) "AM" else "PM"
+    return String.format(Locale.US, "%d:00 %s", displayHour, period)
 }

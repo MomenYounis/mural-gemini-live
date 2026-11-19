@@ -38,8 +38,17 @@ class LearningBackupCodecTest {
             date = 1_700_000_000_000L,
             topic = "Daily Routine",
             durationMinutes = 5,
+            wins = listOf("Spoke smoothly in past tense."),
             mistakeCount = 1,
             mistakes = listOf(SessionMistake("I go to gym.", "I went to the gym.", "ذهبت إلى الجيم.", "Past tense.")),
+            naturalUpgrades = listOf(
+                NaturalUpgrade(
+                    userSaid = "I do exercise every day.",
+                    naturalAlternative = "I work out every day.",
+                    arabicMeaning = "أتمرن كل يوم.",
+                    explanation = "'Work out' is more natural for gym exercise.",
+                ),
+            ),
             practicedPhrases = listOf(PracticedPhrase(cardID = "card-1", phrase = "I went to the gym.", userQuote = "I went to the gym")),
             creditedCardIDs = listOf("card-1"),
         )
@@ -51,11 +60,31 @@ class LearningBackupCodecTest {
                 manualLevelOverride = "B2",
                 speakingGuidance = "Keep turns concise.",
                 recentTopics = listOf(RecentTopicMemory(sessionId, "Daily Routine", "Morning habits.", dateMillis = 1_700_000_000_000L)),
+                suggestedTopics = listOf(
+                    SuggestedTopic(
+                        id = "backend-chat",
+                        title = "Backend Architecture",
+                        subtitle = "Scale and trade-offs",
+                        situation = "Discuss database indexing.",
+                        isRoleplay = false,
+                    ),
+                ),
             ),
+        )
+        val settings = LearningSettings(
+            geminiVoice = "Fenrir",
+            coachStyle = CoachStyle.STRICT_COACH,
+            flashcardAutoPlayOnFlip = true,
+            flashcardListeningMode = false,
+            dailyGoal = DailyGoalConfig(targetSpeakingMinutes = 10, targetCardsReviewed = 15),
+            reminder = StudyReminderConfig(enabled = true, hour = 19, minute = 0),
+        )
+        val activityDays = listOf(
+            DailyActivityRecord(dateIso = "2026-11-18", speakingMinutes = 6, cardsReviewed = 5),
         )
 
         val encoded = LearningBackupCodec.encodeStorageJson(
-            data = LearningBackupData(archive, listOf(report), listOf(card), memories),
+            data = LearningBackupData(archive, listOf(report), listOf(card), memories, settings, activityDays),
             finalAssessments = emptyList(),
         )
         val (decoded, tickets) = LearningBackupCodec.decodeStorageJson(encoded)
@@ -64,6 +93,8 @@ class LearningBackupCodecTest {
         assertEquals(listOf(report), decoded.sessionReports)
         assertEquals(listOf(card), decoded.sentenceCards)
         assertEquals(memories["en"]!!.sanitized(), decoded.learnerMemories["en"])
+        assertEquals(settings, decoded.learningSettings)
+        assertEquals(activityDays, decoded.reviewActivityDays)
 
         // Legacy archive-only storage JSON loads cleanly with empty reports/cards/memories
         val legacyEncoded = ArchiveCodec.encode(archive)
@@ -118,6 +149,8 @@ class LearningBackupCodecTest {
                     manualLevelOverride = "B2",
                 ),
             ),
+            learningSettings = LearningSettings(geminiVoice = "Aoede", coachStyle = CoachStyle.RELAXED_FRIEND),
+            reviewActivityDays = listOf(DailyActivityRecord("2026-11-18", speakingMinutes = 8, cardsReviewed = 3)),
         )
 
         val exported = LearningBackupCodec.encodeBackup(localData)
@@ -126,7 +159,20 @@ class LearningBackupCodecTest {
         val decodedV2Only = ArchiveCodec.decode(exported)
         assertEquals(localArchive, decodedV2Only)
         val rootKeys = Json.parseToJsonElement(exported).jsonObject.keys
-        assertTrue(rootKeys.containsAll(setOf("schemaVersion", "sessions", "preferences", "sessionReports", "sentenceCards", "learnerMemories")))
+        assertTrue(
+            rootKeys.containsAll(
+                setOf(
+                    "schemaVersion",
+                    "sessions",
+                    "preferences",
+                    "sessionReports",
+                    "sentenceCards",
+                    "learnerMemories",
+                    "learningSettings",
+                    "reviewActivityDays",
+                ),
+            ),
+        )
 
         // Incoming extended backup with one shared card phrase + one new card + memory
         val incomingArchive = Archive(
@@ -179,6 +225,11 @@ class LearningBackupCodecTest {
                         interestsAndGoals = listOf("Backend systems"),
                     ),
                 ),
+                learningSettings = LearningSettings(geminiVoice = "Puck", coachStyle = CoachStyle.STRICT_COACH),
+                reviewActivityDays = listOf(
+                    DailyActivityRecord("2026-11-18", speakingMinutes = 12, cardsReviewed = 1),
+                    DailyActivityRecord("2026-11-19", speakingMinutes = 5, cardsReviewed = 4),
+                ),
             ),
         )
 
@@ -187,6 +238,16 @@ class LearningBackupCodecTest {
         assertEquals(2, merged.archive.sessions.size)
         assertEquals(2, merged.sessionReports.size)
         assertEquals(2, merged.sentenceCards.size)
+        // Preserves local settings while merging daily activity idempotently
+        assertEquals("Aoede", merged.learningSettings.geminiVoice)
+        assertEquals(CoachStyle.RELAXED_FRIEND, merged.learningSettings.coachStyle)
+        assertEquals(
+            listOf(
+                DailyActivityRecord("2026-11-18", speakingMinutes = 12, cardsReviewed = 3),
+                DailyActivityRecord("2026-11-19", speakingMinutes = 5, cardsReviewed = 4),
+            ),
+            merged.reviewActivityDays,
+        )
         val keptShared = merged.sentenceCards.first { it.id == "local-card-1" }
         // Must preserve existing SRS progress while merging provenance!
         assertEquals(3, keptShared.repetitionCount)

@@ -87,6 +87,78 @@ class TeachingPolicyUpgradeTest {
     }
 
     @Test
+    fun coachStyleAndDeckPracticeCustomizeVoiceGreetingAndTypedPromptsSafely() {
+        val english = LanguageRegistry.get("en")!!
+        val learner = LearnerState(challenge = 2, observationCount = 0, nextGoal = "", capabilities = emptyList(), words = emptyList())
+        val deckTheme = Sm2Calculator.buildDeckPracticeTheme("Backend Interviews")
+        val targetCard = SentenceCard(
+            id = "deck-c1",
+            topic = "Backend Interviews",
+            languageID = "en",
+            frontText = "صممت واجهة برمجة تطبيقات سريعة.",
+            backText = "I designed a low-latency REST API.",
+            explanation = "Use 'low-latency'.",
+            userOriginalMistake = "",
+        )
+
+        val strictPrompt = TeachingPolicy.voice(
+            language = english,
+            learner = learner,
+            theme = deckTheme,
+            interests = "",
+            meaningLanguage = "Arabic",
+            dueSentenceCards = listOf(targetCard),
+            learningTopics = listOf("Backend Interviews"),
+            coachStyle = CoachStyle.STRICT_COACH,
+        )
+        assertTrue(strictPrompt.contains("Focused deck-practice target sentences for \"Backend Interviews\""))
+        assertTrue(strictPrompt.contains("I designed a low-latency REST API."))
+        assertTrue(strictPrompt.contains("Coach style preference"))
+        assertTrue(strictPrompt.contains("thorough coaching style"))
+        assertTrue(strictPrompt.contains("Speak ONLY English."))
+        assertTrue(strictPrompt.contains("confirming that switch"))
+
+        val balancedPrompt = TeachingPolicy.voice(
+            language = english,
+            learner = learner,
+            theme = null,
+            interests = "",
+            meaningLanguage = "Arabic",
+            coachStyle = CoachStyle.BALANCED,
+        )
+        assertFalse(balancedPrompt.contains("Coach style preference"))
+
+        val relaxedTyped = TeachingPolicy.typedReply(english, coachStyle = CoachStyle.RELAXED_FRIEND)
+        assertTrue(relaxedTyped.contains("friend-like tone"))
+        val roleplayTyped = TeachingPolicy.typedReply(english, coachStyle = CoachStyle.ROLEPLAY)
+        assertTrue(roleplayTyped.contains("immersed in the selected or personalized scenario role"))
+
+        val deckGreeting = TeachingPolicy.greeting(
+            language = english,
+            theme = deckTheme,
+            continuing = false,
+            targetPhrases = listOf(targetCard),
+        )
+        assertTrue(deckGreeting.length <= 1000)
+        assertTrue(deckGreeting.contains("Backend Interviews"))
+        assertTrue(deckGreeting.contains("صممت واجهة برمجة تطبيقات سريعة."))
+        assertTrue(deckGreeting.contains("Never mention flashcards, decks, drills, or tests."))
+    }
+
+    @Test
+    fun postSessionAnalysisEnforcesSttNoPunctuationAndTopicLengthRules() {
+        val english = LanguageRegistry.get("en")!!
+        val prompt = TeachingPolicy.postSessionAnalysis(english)
+        assertTrue(prompt.contains("speech-to-text (STT)"))
+        assertTrue(prompt.contains("punctuation"))
+        assertTrue(prompt.contains("quotation marks"))
+        assertTrue(prompt.contains("Mural"))
+        assertTrue(prompt.contains("2–5 words (max 40 characters)"))
+        assertTrue(prompt.contains("\"wins\""))
+        assertTrue(prompt.contains("\"natural_upgrades\""))
+    }
+
+    @Test
     fun greetingPersonalizesFreeConversationsWhileHonoringThemesAndContinuations() {
         val english = LanguageRegistry.get("en")!!
         val memory = LearnerMemory(
@@ -143,7 +215,7 @@ class TeachingPolicyUpgradeTest {
         val postSchema = TeachingPolicy.postSessionSchema()
         assertStrictSchema(postSchema)
         val postProps = postSchema["properties"]!!.jsonObject
-        assertEquals(setOf("topic", "mistakes", "practiced_phrases"), postProps.keys)
+        assertEquals(setOf("topic", "wins", "mistakes", "natural_upgrades", "practiced_phrases"), postProps.keys)
 
         val memorySchema = TeachingPolicy.learnerMemoryUpdateSchema()
         assertStrictSchema(memorySchema)
@@ -157,11 +229,16 @@ class TeachingPolicyUpgradeTest {
                 "session_topic",
                 "session_summary",
                 "follow_up_hint",
+                "suggested_topics",
             ),
             memProps.keys,
         )
         val levelEnum = memProps["estimated_level"]!!.jsonObject["enum"]!!.jsonArray.map { it.jsonPrimitive.content }
         assertEquals(listOf("", "A1", "A2", "B1", "B2", "C1", "C2"), levelEnum)
+
+        val refreshSchema = TeachingPolicy.suggestedTopicsRefreshSchema()
+        assertStrictSchema(refreshSchema)
+        assertEquals(setOf("suggested_topics"), refreshSchema["properties"]!!.jsonObject.keys)
     }
 
     private fun assertStrictSchema(schema: JsonObject) {

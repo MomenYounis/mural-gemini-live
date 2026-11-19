@@ -4,11 +4,13 @@ import android.content.Context
 import android.util.AtomicFile
 import chat.mural.core.Archive
 import chat.mural.core.ArchiveCodec
+import chat.mural.core.DailyActivityRecord
 import chat.mural.core.FinalAssessmentRecovery
 import chat.mural.core.FinalAssessmentTicket
 import chat.mural.core.LearnerMemory
 import chat.mural.core.LearningBackupCodec
 import chat.mural.core.LearningBackupData
+import chat.mural.core.LearningSettings
 import chat.mural.core.SentenceCard
 import chat.mural.core.SessionReport
 import chat.mural.core.nowSeconds
@@ -22,14 +24,16 @@ data class LearningSnapshot(
     val sessionReports: List<SessionReport> = emptyList(),
     val sentenceCards: List<SentenceCard> = emptyList(),
     val learnerMemories: Map<String, LearnerMemory> = emptyMap(),
+    val learningSettings: LearningSettings = LearningSettings(),
+    val reviewActivityDays: List<DailyActivityRecord> = emptyList(),
 )
 
 class LearningRepository(context: Context) {
     private val file = AtomicFile(File(context.filesDir, "learning.json"))
 
-    fun load(): LearningSnapshot {
+    fun loadReadOnly(): LearningSnapshot {
         if (!file.baseFile.exists() && !File(file.baseFile.path + ".bak").exists()) return LearningSnapshot(Archive())
-        val snapshot = file.openRead().use { input ->
+        return file.openRead().use { input ->
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(65536)
             while (true) {
@@ -53,8 +57,14 @@ class LearningRepository(context: Context) {
                 sessionReports = backupData.sessionReports,
                 sentenceCards = backupData.sentenceCards,
                 learnerMemories = backupData.learnerMemories,
+                learningSettings = backupData.learningSettings,
+                reviewActivityDays = backupData.reviewActivityDays,
             )
         }
+    }
+
+    fun load(): LearningSnapshot {
+        val snapshot = loadReadOnly()
         val archive = snapshot.archive
         var tickets = snapshot.finalAssessments
         val unfinished = archive.sessions.filter { it.endedAt == null }
@@ -64,12 +74,9 @@ class LearningRepository(context: Context) {
             it.endReason = "App closed before finalization"
             tickets = FinalAssessmentRecovery.enqueue(it, tickets)
         }
-        val recovered = LearningSnapshot(
+        val recovered = snapshot.copy(
             archive = archive,
             finalAssessments = tickets,
-            sessionReports = snapshot.sessionReports,
-            sentenceCards = snapshot.sentenceCards,
-            learnerMemories = snapshot.learnerMemories,
         )
         if (unfinished.isNotEmpty()) save(recovered)
         return recovered
@@ -83,6 +90,8 @@ class LearningRepository(context: Context) {
                 sessionReports = snapshot.sessionReports,
                 sentenceCards = snapshot.sentenceCards,
                 learnerMemories = snapshot.learnerMemories,
+                learningSettings = snapshot.learningSettings,
+                reviewActivityDays = snapshot.reviewActivityDays,
             ),
             finalAssessments = snapshot.finalAssessments,
         ).toByteArray(Charsets.UTF_8)

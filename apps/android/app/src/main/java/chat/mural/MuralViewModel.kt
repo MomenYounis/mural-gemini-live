@@ -10,6 +10,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import chat.mural.core.*
 import chat.mural.network.*
+import chat.mural.reminder.StudyReminderScheduler
 import chat.mural.ui.AI_CONSENT_VERSION
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -309,6 +310,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     var sessionReports by mutableStateOf<List<SessionReport>>(emptyList()); private set
     var sentenceCards by mutableStateOf<List<SentenceCard>>(emptyList()); private set
     var learnerMemories by mutableStateOf<Map<String, LearnerMemory>>(emptyMap()); private set
+    var learningSettings by mutableStateOf(LearningSettings()); private set
+    var reviewActivityDays by mutableStateOf<List<DailyActivityRecord>>(emptyList()); private set
+    var activeDeckPracticeTopic by mutableStateOf<String?>(null); private set
+    var refreshingSuggestedTopics by mutableStateOf(false); private set
     var activeSessionReport by mutableStateOf<SessionReport?>(null); private set
     var showSessionReport by mutableStateOf(false); private set
     var analyzingSessionReport by mutableStateOf(false); private set
@@ -316,6 +321,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     var sessionReportError by mutableStateOf<String?>(null); private set
     private var postSessionAnalysisJob: Job? = null
     private var learnerMemoryUpdateJob: Job? = null
+    private var suggestedTopicsRefreshJob: Job? = null
     private val sessionTargetCardIds = linkedSetOf<String>()
     val activeLanguageSentenceCards: List<SentenceCard>
         get() = Sm2Calculator.cardsForLanguage(sentenceCards, language.id)
@@ -327,6 +333,25 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         get() = Sm2Calculator.dueCards(sentenceCards, limit = 5, languageID = language.id)
     val activeLearnerMemory: LearnerMemory
         get() = learnerMemoryFor(language.id)
+    val activeGeminiVoice: String
+        get() = GeminiLiveProtocol.resolveVoice(learningSettings.geminiVoice, BuildConfig.GEMINI_LIVE_VOICE)
+    val coachStyle: CoachStyle
+        get() = learningSettings.coachStyle
+    val flashcardAutoPlayOnFlip: Boolean
+        get() = learningSettings.flashcardAutoPlayOnFlip
+    val flashcardListeningMode: Boolean
+        get() = learningSettings.flashcardListeningMode
+    val activeSuggestedTopics: List<SuggestedTopic>
+        get() = LearnerMemoryReducer.effectiveSuggestedTopics(activeLearnerMemory)
+    val learningProgressSummary: LearningProgressSummary
+        get() = LearningProgressCalculator.compute(
+            sessions = archive.sessions,
+            sentenceCards = sentenceCards,
+            activityRecords = reviewActivityDays,
+            languageID = language.id,
+            memory = activeLearnerMemory,
+            dailyGoal = learningSettings.dailyGoal,
+        )
 
     fun learnerMemoryFor(languageID: String = language.id): LearnerMemory {
         val raw = learnerMemories[languageID] ?: LearnerMemory()
@@ -402,6 +427,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 sessionReports = loaded.first.sessionReports
                 sentenceCards = loaded.first.sentenceCards
                 learnerMemories = loaded.first.learnerMemories
+                learningSettings = loaded.first.learningSettings
+                reviewActivityDays = loaded.first.reviewActivityDays
+                runCatching { StudyReminderScheduler.sync(getApplication(), learningSettings.reminder) }
                 val providers = providerStore.read(ConversationProvider.PERSONAL_KEY)
                 hostedSessionIDs = providers.hostedIDs
                 pendingHostedOwnerID = providers.pendingOwnerID
@@ -631,6 +659,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         sessionReports.toList(),
         sentenceCards.toList(),
         learnerMemories.toMap(),
+        learningSettings.sanitized(),
+        reviewActivityDays.toList(),
     )
     private fun persist() {
         if (storageReady) writes.trySend(SaveRequest(persistenceSnapshot()))
@@ -1073,6 +1103,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private var startingWithHistory = false
     fun chooseTheme(theme: ConversationTheme?) {
         if (!isRunning && session != null) resetConversation()
+        activeDeckPracticeTopic = null
         selectedTheme = theme
         if (theme?.id != "current") topicResult = null
         if (state == "active" || state == "connecting") {
@@ -1081,6 +1112,15 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             startingWithHistory = false
             if (state == "active") requestReply(TeachingPolicy.theme(theme, language))
         }
+    }
+
+    fun prepareDeckPractice(deck: TopicDeck) {
+        if (isRunning) return
+        if (session != null) resetConversation()
+        val cleanTopic = Sm2Calculator.normalizedTopic(deck.topic)
+        selectedTheme = Sm2Calculator.buildDeckPracticeTheme(cleanTopic)
+        topicResult = null
+        activeDeckPracticeTopic = cleanTopic
     }
     fun toggleMeaning() {
         archive = archive.copy(preferences = archive.preferences.copy(meaningVisible = !archive.preferences.meaningVisible)); persist()
@@ -1152,9 +1192,19 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             fail(error, R.string.error_voice_connect_failed); return
         }
         val module = language
-        val dueCards = Sm2Calculator.stillLearningCards(sentenceCards, module.id, limit = 5)
+        val focusedTopic = activeDeckPracticeTopic
+        val dueCards = if (focusedTopic != null) {
+            Sm2Calculator.prioritizeDeckCards(sentenceCards, module.id, focusedTopic, limit = 5)
+        } else {
+            Sm2Calculator.stillLearningCards(sentenceCards, module.id, limit = 5)
+        }
         dueCards.forEach { sessionTargetCardIds += it.id }
-        val learningTopics = Sm2Calculator.stillLearningTopics(sentenceCards, module.id)
+        val baseTopics = Sm2Calculator.stillLearningTopics(sentenceCards, module.id)
+        val learningTopics = if (focusedTopic != null) {
+            (listOf(focusedTopic) + baseTopics.filterNot { it.equals(focusedTopic, ignoreCase = true) }).take(12)
+        } else {
+            baseTopics
+        }
         val memory = learnerMemoryFor(module.id)
         val instructions = TeachingPolicy.voice(
             module,
@@ -1165,6 +1215,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             dueSentenceCards = dueCards,
             learningTopics = learningTopics,
             memory = memory,
+            coachStyle = learningSettings.coachStyle,
         )
         val history = ConversationHistory.messages(continuing ?: session)
         startingWithHistory = history.isNotEmpty()
@@ -1205,7 +1256,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 liveInputTokens = 0; liveOutputTokens = 0; liveStartedAt = System.nanoTime()
-                transport.connect(provider, vendor, instructions, history, module.locale)
+                transport.connect(provider, vendor, instructions, history, module.locale, voice = activeGeminiVoice)
             } catch (cancelled: CancellationException) {
                 if (choice == ConversationProvider.HOSTED_MINUTES) reconcileHostedSessions()
                 throw cancelled
@@ -1254,7 +1305,16 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 viewModelScope.launch { runCatching { providerStore.recordGeminiUsage(id, elapsed, liveInputTokens, liveOutputTokens) } }
             }
         }
-        updateSession { it.endedAt = nowSeconds(); it.usageFinal = final && !geminiSession }
+        val endAppleSec = nowSeconds()
+        val endedSession = session
+        if (endedSession != null && endedSession.passages.any { it.speaker == Speaker.user && it.text.isNotBlank() }) {
+            val sec = (endAppleSec - endedSession.startedAt).coerceAtLeast(1.0)
+            val mins = (sec / 60.0).roundToInt().coerceAtLeast(1)
+            reviewActivityDays = LearningProgressCalculator.recordConversationActivity(reviewActivityDays, mins)
+        }
+        activeDeckPracticeTopic = null
+        if (selectedTheme?.id?.startsWith("deck:") == true) selectedTheme = null
+        updateSession { it.endedAt = endAppleSec; it.usageFinal = final && !geminiSession }
         state = "ended"
         notice = when (session?.endReason) {
             "Inactivity" -> getApplication<Application>().getString(R.string.notice_ended_inactivity)
@@ -1299,7 +1359,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         if (isRunning) return
         clearContinuation()
         generation++; resetJob?.cancel(); actionJob?.cancel(); clearLookup(); assessmentJob?.cancel(); languageCheckJob?.cancel(); meanings.reset()
-        session = null; selectedTheme = null; topicResult = null
+        session = null; selectedTheme = null; topicResult = null; activeDeckPracticeTopic = null
         completedTools.clear(); sessionTargetCardIds.clear()
         notice = null; working = false; state = "idle"; voiceSession = false
     }
@@ -1324,7 +1384,19 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 state = "active"; liveStartedAt = System.nanoTime(); activity = ConversationActivity(activityNow()); conversationPace = ConversationPace(); inactivitySeconds = null
                 if (conversationProvider == ConversationProvider.PERSONAL_KEY) providerIssue = null
                 if (selectedTheme?.id == "current") topicResult?.let { updateLiveContext("Sourced context, data: ${it.text}", referenceOnly = true) }
-                requestReply(TeachingPolicy.greeting(language, selectedTheme, startingWithHistory, memory = activeLearnerMemory)); startDurationChecks()
+                val deckTargetCards = activeDeckPracticeTopic?.let { topic ->
+                    Sm2Calculator.prioritizeDeckCards(sentenceCards, language.id, topic, limit = 5)
+                }.orEmpty()
+                requestReply(
+                    TeachingPolicy.greeting(
+                        language = language,
+                        theme = selectedTheme,
+                        continuing = startingWithHistory,
+                        memory = activeLearnerMemory,
+                        targetPhrases = deckTargetCards,
+                    ),
+                )
+                startDurationChecks()
             }
             is LiveEvent.Transcript -> {
                 if (event.interim) {
@@ -1606,11 +1678,21 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 if (!voiceSession) providerStore.markPersonal(id, vendorFor(id))
                 val instructions = if (voiceSession) {
-                    TeachingPolicy.typedReply(language, activeLearnerMemory)
+                    TeachingPolicy.typedReply(language, activeLearnerMemory, learningSettings.coachStyle)
                 } else {
-                    val baselineCards = Sm2Calculator.stillLearningCards(sentenceCards, language.id, limit = 5)
+                    val focusedTopic = activeDeckPracticeTopic
+                    val baselineCards = if (focusedTopic != null) {
+                        Sm2Calculator.prioritizeDeckCards(sentenceCards, language.id, focusedTopic, limit = 5)
+                    } else {
+                        Sm2Calculator.stillLearningCards(sentenceCards, language.id, limit = 5)
+                    }
                     baselineCards.forEach { sessionTargetCardIds += it.id }
-                    val learningTopics = Sm2Calculator.stillLearningTopics(sentenceCards, language.id)
+                    val baseTopics = Sm2Calculator.stillLearningTopics(sentenceCards, language.id)
+                    val learningTopics = if (focusedTopic != null) {
+                        (listOf(focusedTopic) + baseTopics.filterNot { it.equals(focusedTopic, ignoreCase = true) }).take(12)
+                    } else {
+                        baseTopics
+                    }
                     TeachingPolicy.voice(
                         language,
                         learner,
@@ -1620,7 +1702,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                         dueSentenceCards = baselineCards,
                         learningTopics = learningTopics,
                         memory = activeLearnerMemory,
-                    ) + "\n" + TeachingPolicy.typedReply(language, activeLearnerMemory)
+                        coachStyle = learningSettings.coachStyle,
+                    ) + "\n" + TeachingPolicy.typedReply(language, activeLearnerMemory, learningSettings.coachStyle)
                 }
                 val result = teaching(id, HelperPurpose.TYPED_REPLY, UUID.randomUUID().toString(), instructions, helperContext(draft))
                 if (token != generation || session?.id != id || state != "active") return@launch
@@ -1688,6 +1771,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun discuss(brief: TopicBrief) {
         if (brief.languageID != language.id) return
+        activeDeckPracticeTopic = null
         if (state == "active") {
             topicResult = brief; selectedTheme = currentTheme(brief)
             updateSession {
@@ -1860,12 +1944,14 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         reports.dismiss()
         dismissSessionReport()
         learnerMemoryUpdateJob?.cancel(); updatingLearnerMemory = false
+        suggestedTopicsRefreshJob?.cancel(); refreshingSuggestedTopics = false
         cancelLearningReviews(); hostedSessionIDs.forEach(hostedBindings::forgetLearning)
         hostedFinalAssessmentJobs.values.toList().forEach { it.cancel() }; hostedFinalAssessmentJobs.clear(); resetConversation()
         finalAssessmentTickets = emptyList()
         sessionReports = emptyList()
         sentenceCards = emptyList()
         learnerMemories = emptyMap()
+        reviewActivityDays = emptyList()
         val deleted = archive.sessions.map { it.id }.toSet()
         personalVendors = personalVendors - deleted; geminiElapsedSeconds = 0.0
         viewModelScope.launch { runCatching { providerStore.forgetPersonal(deleted) } }
@@ -1942,15 +2028,22 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 val payload = postSessionJson.decodeFromString<PostSessionAnalysisPayload>(result.text)
-                val cleanTopic = payload.topic.trim().ifBlank {
-                    snapshot.title.ifBlank { Sm2Calculator.GENERAL_TOPIC }
-                }
+                val cleanTopic = Sm2Calculator.cleanPostSessionTopic(
+                    raw = payload.topic,
+                    fallback = snapshot.title.ifBlank { Sm2Calculator.GENERAL_TOPIC },
+                )
+                val cleanWins = payload.wins
+                    .map { it.replace(Regex("\\s+"), " ").trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinctBy { it.lowercase() }
+                    .take(3)
                 val cleanMistakes = payload.mistakes.mapNotNull { m ->
                     val said = m.userSaid.trim()
                     val corr = m.correction.trim()
                     val arab = m.arabicMeaning.trim()
                     val expl = m.explanation.trim()
                     if (said.isBlank() || corr.isBlank() || arab.isBlank()) null
+                    else if (isPunctuationOrFormattingOnlyDiff(said, corr)) null
                     else SessionMistake(
                         userSaid = said,
                         correction = corr,
@@ -1958,12 +2051,27 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                         explanation = expl.ifBlank { "Use the natural corrected phrasing." },
                     )
                 }
+                val excludedCorrections = cleanMistakes.map { it.correction.trim().lowercase() }.toSet()
+                val cleanUpgrades = payload.naturalUpgrades.mapNotNull { u ->
+                    val said = u.userSaid.trim()
+                    val alt = u.naturalAlternative.trim()
+                    val arab = u.arabicMeaning.trim()
+                    val expl = u.explanation.trim()
+                    if (said.isBlank() || alt.isBlank()) null
+                    else if (isPunctuationOrFormattingOnlyDiff(said, alt)) null
+                    else if (alt.lowercase() in excludedCorrections) null
+                    else NaturalUpgrade(
+                        userSaid = said,
+                        naturalAlternative = alt,
+                        arabicMeaning = arab,
+                        explanation = expl.ifBlank { "More natural, native-sounding phrasing." },
+                    )
+                }.distinctBy { it.naturalAlternative.lowercase() }.take(2)
                 val nowMillis = System.currentTimeMillis()
                 val existingReport = reportForSession(snapshot.id)
                 val userTexts = snapshot.passages
                     .filter { it.speaker == Speaker.user && it.text.isNotBlank() }
                     .map { it.text }
-                val excludedCorrections = cleanMistakes.map { it.correction.trim().lowercase() }.toSet()
                 val practicedResult = Sm2Calculator.applyPracticedPhrases(
                     existingCards = sentenceCards,
                     reportedPhrases = payload.practicedPhrases,
@@ -1984,8 +2092,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     date = reportDateMillis,
                     topic = cleanTopic,
                     durationMinutes = durationMin,
+                    wins = cleanWins,
                     mistakeCount = cleanMistakes.size,
                     mistakes = cleanMistakes,
+                    naturalUpgrades = cleanUpgrades,
                     practicedPhrases = practicedResult.verifiedPhrases,
                     creditedCardIDs = practicedResult.creditedCardIDs,
                 )
@@ -2076,11 +2186,140 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun selectGeminiVoice(voice: String) {
+        if (isRunning || !storageReady) return
+        val resolved = GeminiLiveProtocol.resolveVoice(voice, BuildConfig.GEMINI_LIVE_VOICE)
+        learningSettings = learningSettings.copy(geminiVoice = resolved).sanitized()
+        persist()
+    }
+
+    fun selectCoachStyle(style: CoachStyle) {
+        if (isRunning || !storageReady) return
+        learningSettings = learningSettings.copy(coachStyle = style).sanitized()
+        persist()
+    }
+
+    fun setFlashcardAutoPlayOnFlip(enabled: Boolean) {
+        learningSettings = learningSettings.copy(flashcardAutoPlayOnFlip = enabled).sanitized()
+        persist()
+    }
+
+    fun setFlashcardListeningMode(enabled: Boolean) {
+        learningSettings = learningSettings.copy(flashcardListeningMode = enabled).sanitized()
+        persist()
+    }
+
+    fun setDailyGoal(speakingMinutes: Int, cardsReviewed: Int) {
+        if (!storageReady) return
+        learningSettings = learningSettings.copy(
+            dailyGoal = DailyGoalConfig(
+                targetSpeakingMinutes = speakingMinutes,
+                targetCardsReviewed = cardsReviewed,
+            ),
+        ).sanitized()
+        persist()
+    }
+
+    fun setReminderEnabled(enabled: Boolean) {
+        if (!storageReady) return
+        learningSettings = learningSettings.copy(
+            reminder = learningSettings.reminder.copy(enabled = enabled),
+        ).sanitized()
+        persist()
+        runCatching { StudyReminderScheduler.sync(getApplication(), learningSettings.reminder) }
+    }
+
+    fun setReminderHour(hour: Int) {
+        if (!storageReady) return
+        learningSettings = learningSettings.copy(
+            reminder = learningSettings.reminder.copy(hour = hour, minute = 0),
+        ).sanitized()
+        persist()
+        runCatching { StudyReminderScheduler.sync(getApplication(), learningSettings.reminder) }
+    }
+
+    fun isUpgradeInDeck(languageID: String, naturalAlternative: String): Boolean =
+        Sm2Calculator.hasCardForBackText(sentenceCards, languageID, naturalAlternative)
+
+    fun addNaturalUpgradeToDeck(report: SessionReport, upgrade: NaturalUpgrade) {
+        sentenceCards = Sm2Calculator.addNaturalUpgradeToCards(sentenceCards, report, upgrade)
+        persist()
+    }
+
+    fun refreshSuggestedTopics() {
+        if (isRunning || refreshingSuggestedTopics) return
+        val langID = language.id
+        val mem = learnerMemoryFor(langID)
+        if (!mem.hasContent()) return
+        val currentTitles = activeSuggestedTopics.map { it.title }.toSet()
+
+        val canUseCloud = storageReady &&
+            archive.preferences.aiConsentVersion == AI_CONSENT_VERSION &&
+            conversationProvider == ConversationProvider.PERSONAL_KEY &&
+            hasTeachingKey()
+        if (!canUseCloud) {
+            val rotated = LearnerMemoryReducer.fallbackSuggestedTopics(mem, excludeTitles = currentTitles)
+            if (rotated.isNotEmpty()) {
+                learnerMemories = learnerMemories + (langID to mem.copy(suggestedTopics = rotated).sanitized())
+                persist()
+            }
+            return
+        }
+
+        val module = language
+        suggestedTopicsRefreshJob?.cancel()
+        refreshingSuggestedTopics = true
+        suggestedTopicsRefreshJob = viewModelScope.launch {
+            try {
+                val result = withTimeout(learningReviewTimeoutMillis(aiVendor, ConversationProvider.PERSONAL_KEY)) {
+                    teaching(
+                        localID = null,
+                        purpose = HelperPurpose.ASSESSMENT,
+                        logicalID = "suggested-topics:$langID:${System.currentTimeMillis()}",
+                        instructions = TeachingPolicy.suggestedTopicsRefresh(module),
+                        input = TeachingPolicy.suggestedTopicsRefreshInput(mem, currentTitles.toList()),
+                        schema = TeachingPolicy.suggestedTopicsRefreshSchema(),
+                    )
+                }
+                val payload = postSessionJson.decodeFromString<SuggestedTopicsRefreshPayload>(result.text)
+                val latest = learnerMemoryFor(langID)
+                val fresh = LearnerMemoryReducer.sanitizeSuggestedPayloads(
+                    payloads = payload.suggestedTopics,
+                    recentTopics = latest.recentTopics,
+                    excludeTitles = currentTitles,
+                ).ifEmpty {
+                    LearnerMemoryReducer.sanitizeSuggestedPayloads(
+                        payloads = payload.suggestedTopics,
+                        recentTopics = latest.recentTopics,
+                    )
+                }.ifEmpty {
+                    LearnerMemoryReducer.fallbackSuggestedTopics(latest, excludeTitles = currentTitles)
+                }
+                if (fresh.isNotEmpty()) {
+                    learnerMemories = learnerMemories + (langID to latest.copy(suggestedTopics = fresh).sanitized())
+                    persist()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                val latest = learnerMemoryFor(langID)
+                val fallback = LearnerMemoryReducer.fallbackSuggestedTopics(latest, excludeTitles = currentTitles)
+                if (fallback.isNotEmpty()) {
+                    learnerMemories = learnerMemories + (langID to latest.copy(suggestedTopics = fallback).sanitized())
+                    persist()
+                }
+            } finally {
+                refreshingSuggestedTopics = false
+            }
+        }
+    }
+
     fun reviewSentenceCard(cardID: String, rating: ReviewRating) {
         val nowMillis = System.currentTimeMillis()
         sentenceCards = sentenceCards.map { card ->
             if (card.id == cardID) Sm2Calculator.review(card, rating, nowMillis) else card
         }
+        reviewActivityDays = LearningProgressCalculator.recordCardReviewActivity(reviewActivityDays, 1)
         persist()
     }
 
@@ -2095,6 +2334,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             sessionReports = sessionReports,
             sentenceCards = sentenceCards,
             learnerMemories = learnerMemories,
+            learningSettings = learningSettings,
+            reviewActivityDays = reviewActivityDays,
         ),
     )
 
@@ -2107,12 +2348,16 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 sessionReports = sessionReports,
                 sentenceCards = sentenceCards,
                 learnerMemories = learnerMemories,
+                learningSettings = learningSettings,
+                reviewActivityDays = reviewActivityDays,
             )
             val merged = LearningBackupCodec.mergeBackup(current, incoming)
             archive = merged.archive
             sessionReports = merged.sessionReports
             sentenceCards = merged.sentenceCards
             learnerMemories = merged.learnerMemories
+            learningSettings = merged.learningSettings
+            reviewActivityDays = merged.reviewActivityDays
             persist()
             notice = getApplication<Application>().getString(R.string.notice_backup_imported)
             true

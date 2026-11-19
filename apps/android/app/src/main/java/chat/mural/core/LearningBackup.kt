@@ -12,6 +12,8 @@ data class LearningBackupData(
     val sessionReports: List<SessionReport> = emptyList(),
     val sentenceCards: List<SentenceCard> = emptyList(),
     val learnerMemories: Map<String, LearnerMemory> = emptyMap(),
+    val learningSettings: LearningSettings = LearningSettings(),
+    val reviewActivityDays: List<DailyActivityRecord> = emptyList(),
 )
 
 object LearningBackupCodec {
@@ -35,11 +37,15 @@ object LearningBackupCodec {
             .filterKeys { LanguageRegistry.get(it) != null }
             .mapValues { (_, memory) -> memory.sanitized() }
             .filterValues { it.hasContent() || !it.autoUpdateEnabled || it.manualLevelOverride != null }
+        val cleanSettings = data.learningSettings.sanitized()
+        val cleanActivity = LearningProgressCalculator.sanitizeActivityRecords(data.reviewActivityDays)
         val extended = JsonObject(
             archiveObj +
                 ("sessionReports" to json.encodeToJsonElement(data.sessionReports.take(MAX_REPORTS))) +
                 ("sentenceCards" to json.encodeToJsonElement(data.sentenceCards.take(MAX_CARDS))) +
-                ("learnerMemories" to json.encodeToJsonElement(cleanMemories)),
+                ("learnerMemories" to json.encodeToJsonElement(cleanMemories)) +
+                ("learningSettings" to json.encodeToJsonElement(cleanSettings)) +
+                ("reviewActivityDays" to json.encodeToJsonElement(cleanActivity)),
         )
         val encoded = json.encodeToString(JsonObject.serializer(), extended)
         if (encoded.toByteArray(Charsets.UTF_8).size > ArchiveCodec.MAXIMUM_ENCODED_BYTES) {
@@ -56,12 +62,14 @@ object LearningBackupCodec {
             }
         }
         val rootObj = json.parseToJsonElement(raw).jsonObject
-        val (reports, cards, memories) = decodeExtendedFields(rootObj)
+        val extended = decodeExtendedFields(rootObj)
         return LearningBackupData(
             archive = archive,
-            sessionReports = reports,
-            sentenceCards = cards,
-            learnerMemories = memories,
+            sessionReports = extended.reports,
+            sentenceCards = extended.cards,
+            learnerMemories = extended.memories,
+            learningSettings = extended.settings,
+            reviewActivityDays = extended.activityDays,
         )
     }
 
@@ -125,12 +133,18 @@ object LearningBackupCodec {
         }
         val finalCards = mergedCards.take(MAX_CARDS)
         val finalMemories = LearnerMemoryReducer.mergeImported(current.learnerMemories, incoming.learnerMemories)
+        val finalActivity = LearningProgressCalculator.mergeActivityRecords(
+            current.reviewActivityDays,
+            incoming.reviewActivityDays,
+        )
 
         val merged = LearningBackupData(
             archive = mergedArchive,
             sessionReports = finalReports,
             sentenceCards = finalCards,
             learnerMemories = finalMemories,
+            learningSettings = current.learningSettings.sanitized(),
+            reviewActivityDays = finalActivity,
         )
         encodeBackup(merged)
         return merged
@@ -144,12 +158,16 @@ object LearningBackupCodec {
         val cleanMemories = data.learnerMemories
             .filterKeys { LanguageRegistry.get(it) != null }
             .mapValues { (_, memory) -> memory.sanitized() }
+        val cleanSettings = data.learningSettings.sanitized()
+        val cleanActivity = LearningProgressCalculator.sanitizeActivityRecords(data.reviewActivityDays)
         val stored = JsonObject(
             archiveObj +
                 ("androidFinalAssessments" to compactJson.encodeToJsonElement(finalAssessments.takeLast(MAX_TICKETS))) +
                 ("sessionReports" to compactJson.encodeToJsonElement(data.sessionReports.take(MAX_REPORTS))) +
                 ("sentenceCards" to compactJson.encodeToJsonElement(data.sentenceCards.take(MAX_CARDS))) +
-                ("learnerMemories" to compactJson.encodeToJsonElement(cleanMemories)),
+                ("learnerMemories" to compactJson.encodeToJsonElement(cleanMemories)) +
+                ("learningSettings" to compactJson.encodeToJsonElement(cleanSettings)) +
+                ("reviewActivityDays" to compactJson.encodeToJsonElement(cleanActivity)),
         )
         return stored.toString()
     }
@@ -159,18 +177,26 @@ object LearningBackupCodec {
         val rootObj = compactJson.parseToJsonElement(raw).jsonObject
         val metadata = rootObj["androidFinalAssessments"]
         val tickets = metadata?.let { compactJson.decodeFromJsonElement<List<FinalAssessmentTicket>>(it) } ?: emptyList()
-        val (reports, cards, memories) = decodeExtendedFields(rootObj)
+        val extended = decodeExtendedFields(rootObj)
         return LearningBackupData(
             archive = archive,
-            sessionReports = reports,
-            sentenceCards = cards,
-            learnerMemories = memories,
+            sessionReports = extended.reports,
+            sentenceCards = extended.cards,
+            learnerMemories = extended.memories,
+            learningSettings = extended.settings,
+            reviewActivityDays = extended.activityDays,
         ) to tickets
     }
 
-    private fun decodeExtendedFields(
-        rootObj: JsonObject,
-    ): Triple<List<SessionReport>, List<SentenceCard>, Map<String, LearnerMemory>> {
+    private data class ExtendedFields(
+        val reports: List<SessionReport>,
+        val cards: List<SentenceCard>,
+        val memories: Map<String, LearnerMemory>,
+        val settings: LearningSettings,
+        val activityDays: List<DailyActivityRecord>,
+    )
+
+    private fun decodeExtendedFields(rootObj: JsonObject): ExtendedFields {
         val reports = rootObj["sessionReports"]?.let { element ->
             runCatching { compactJson.decodeFromJsonElement<List<SessionReport>>(element) }.getOrNull()
         }.orEmpty()
@@ -185,6 +211,12 @@ object LearningBackupCodec {
         }.orEmpty()
             .filterKeys { LanguageRegistry.get(it) != null }
             .mapValues { (_, memory) -> memory.sanitized() }
-        return Triple(reports, cards, memories)
+        val settings = rootObj["learningSettings"]?.let { element ->
+            runCatching { compactJson.decodeFromJsonElement<LearningSettings>(element) }.getOrNull()
+        }?.sanitized() ?: LearningSettings()
+        val activityDays = rootObj["reviewActivityDays"]?.let { element ->
+            runCatching { compactJson.decodeFromJsonElement<List<DailyActivityRecord>>(element) }.getOrNull()
+        }?.let(LearningProgressCalculator::sanitizeActivityRecords).orEmpty()
+        return ExtendedFields(reports, cards, memories, settings, activityDays)
     }
 }

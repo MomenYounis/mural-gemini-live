@@ -452,6 +452,22 @@ class GeminiLiveTransportTest {
         assertFalse(h.failures.single().contains("configuration")); h.stop()
     }
 
+    @Test fun dynamicVoiceSelectionOverridesSetupVoicePerConnection() = runTest {
+        val h = Harness(this)
+        val connecting = async { h.transport.connect({ h.key }, "Policy", voice = "Fenrir") }
+        runCurrent()
+        h.socket.open()
+        runCurrent()
+        val setup = Json.parseToJsonElement(h.socket.sent.single()).jsonObject["setup"]!!.jsonObject
+        val voiceName = setup["generationConfig"]!!.jsonObject["speechConfig"]!!.jsonObject["voiceConfig"]!!
+            .jsonObject["prebuiltVoiceConfig"]!!.jsonObject["voiceName"]!!.jsonPrimitive.content
+        assertEquals("Fenrir", voiceName)
+        h.socket.receive(SETUP)
+        runCurrent()
+        connecting.await()
+        h.stop()
+    }
+
     private class Harness(val scope: TestScope) {
         val sockets = FakeSockets()
         val audio = FakeAudio()

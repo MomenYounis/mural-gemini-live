@@ -91,6 +91,7 @@ class VoiceConversationService : Service() {
         private var sessionID: String? = null
         private var endSession: (() -> Unit)? = null
 
+        fun isActive(): Boolean = sessionID != null
         fun holds(id: String?): Boolean = id != null && sessionID == id
         fun start(context: Context, id: String, end: () -> Unit) {
             check(sessionID == null) { "A voice conversation already owns the service" }

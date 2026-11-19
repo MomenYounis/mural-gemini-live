@@ -28,7 +28,8 @@ sealed interface LiveOffer {
 }
 
 data class LiveSessionRequest(val offer: LiveOffer, val instructions: String, val history: JsonArray = JsonArray(emptyList()),
-    val language: String? = null, val requestID: String = UUID.randomUUID().toString(), val requestedMilliseconds: Long? = null) {
+    val language: String? = null, val requestID: String = UUID.randomUUID().toString(), val requestedMilliseconds: Long? = null,
+    val voice: String? = null) {
     constructor(sdp: String, instructions: String, history: JsonArray = JsonArray(emptyList()), language: String? = null) :
         this(LiveOffer.WebRTC(sdp), instructions, history, language)
     val sdp: String get() = (offer as? LiveOffer.WebRTC)?.sdp ?: error("This provider requires WebRTC")

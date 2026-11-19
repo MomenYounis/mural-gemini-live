@@ -471,6 +471,181 @@ class SentenceSrsTest {
     @Test fun sessionReportDefaultArgumentsDoNotThrow() {
         val report = SessionReport(topic = "Defaults", durationMinutes = 3)
         assertTrue(report.mistakes.isEmpty())
+        assertTrue(report.wins.isEmpty())
+        assertTrue(report.naturalUpgrades.isEmpty())
         assertEquals(0, report.mistakeCount)
+    }
+
+    @Test
+    fun punctuationAndFormattingOnlyDiffGuardFiltersNoiseWhilePreservingRealFixes() {
+        assertTrue(isPunctuationOrFormattingOnlyDiff("I said moral, not more.", "I said \"moral,\" not \"more.\""))
+        assertTrue(isPunctuationOrFormattingOnlyDiff("i said moral not more", "I said “moral,” not “more”!"))
+        assertTrue(isPunctuationOrFormattingOnlyDiff("This is well known.", "This is well-known."))
+        assertTrue(isPunctuationOrFormattingOnlyDiff("Send me an email", "Send me an e-mail."))
+        assertTrue(isPunctuationOrFormattingOnlyDiff("I dont know", "I don't know."))
+        assertTrue(isPunctuationOrFormattingOnlyDiff("Hello   world", "Hello world"))
+
+        // Genuine grammar/vocabulary/preposition/article/word-order fixes must NOT be filtered
+        assertFalse(isPunctuationOrFormattingOnlyDiff("Yesterday I go to the gym.", "Yesterday I went to the gym."))
+        assertFalse(isPunctuationOrFormattingOnlyDiff("I am agree with you", "I agree with you."))
+        assertFalse(isPunctuationOrFormattingOnlyDiff("I have three years experience on backend.", "I have three years of experience in backend."))
+        assertFalse(isPunctuationOrFormattingOnlyDiff("I want go home", "I want to go home."))
+        assertFalse(isPunctuationOrFormattingOnlyDiff("She like reading", "She likes reading."))
+
+        // Sm2Calculator.mergeFromReport also drops punctuation-only items
+        val now = 6_000_000_000_000L
+        val report = SessionReport(
+            sessionID = "sess-filter",
+            languageID = "en",
+            date = now,
+            topic = "Programming Interview Concepts (Loops, Classes, Objects, Constructors)",
+            durationMinutes = 6,
+            mistakes = listOf(
+                SessionMistake(
+                    userSaid = "I said moral, not more.",
+                    correction = "I said \"moral,\" not \"more.\"",
+                    arabicMeaning = "قلت مورال، وليس مور.",
+                    explanation = "Add quotation marks.",
+                ),
+                SessionMistake(
+                    userSaid = "Yesterday I go to the office.",
+                    correction = "Yesterday I went to the office.",
+                    arabicMeaning = "ذهبت إلى المكتب بالأمس.",
+                    explanation = "Use past simple 'went'.",
+                ),
+            ),
+        )
+        val merged = Sm2Calculator.mergeFromReport(emptyList(), report, nowMillis = now)
+        assertEquals(1, merged.size)
+        assertEquals("Yesterday I went to the office.", merged.single().backText)
+        assertEquals("Programming Interview Concepts", merged.single().topic)
+    }
+
+    @Test
+    fun cleanPostSessionTopicKeepsShortTitlesAndTrimsParentheticalLists() {
+        assertEquals("Daily Routine", Sm2Calculator.cleanPostSessionTopic("Daily Routine"))
+        assertEquals("Tech Interviews", Sm2Calculator.cleanPostSessionTopic("  Tech   Interviews  "))
+        assertEquals(
+            "Programming Interview Concepts",
+            Sm2Calculator.cleanPostSessionTopic("Programming Interview Concepts (Loops, Classes, Objects, Constructors)"),
+        )
+        assertEquals(Sm2Calculator.GENERAL_TOPIC, Sm2Calculator.cleanPostSessionTopic("   "))
+    }
+
+    @Test
+    fun postSessionPayloadAndSessionReportSupportWinsAndNaturalUpgradesWithBackwardCompatibility() {
+        val richJson = """
+            {
+              "topic": "System Design",
+              "wins": [
+                "You explained database sharding clearly without translating.",
+                "You used past tense consistently when describing your internship."
+              ],
+              "mistakes": [],
+              "natural_upgrades": [
+                {
+                  "user_said": "It makes the database more fast when users grow.",
+                  "natural_alternative": "It keeps queries fast as traffic scales.",
+                  "arabic_meaning": "يحافظ على سرعة الاستعلامات مع زيادة الزيارات.",
+                  "explanation": "'Keeps queries fast as traffic scales' sounds more idiomatic in tech discussions."
+                }
+              ],
+              "practiced_phrases": []
+            }
+        """.trimIndent()
+        val parsed = json.decodeFromString<PostSessionAnalysisPayload>(richJson)
+        assertEquals(2, parsed.wins.size)
+        assertEquals(1, parsed.naturalUpgrades.size)
+        assertEquals("It keeps queries fast as traffic scales.", parsed.naturalUpgrades.single().naturalAlternative)
+
+        // Legacy payload without wins / natural_upgrades still decodes cleanly
+        val legacyReportJson = """
+            {
+              "id": "rep-legacy",
+              "sessionID": "sess-legacy",
+              "languageID": "en",
+              "date": 1700000000000,
+              "topic": "Daily Routine",
+              "durationMinutes": 4,
+              "mistakes": [],
+              "mistakeCount": 0
+            }
+        """.trimIndent()
+        val decodedReport = json.decodeFromString<SessionReport>(legacyReportJson)
+        assertTrue(decodedReport.wins.isEmpty())
+        assertTrue(decodedReport.naturalUpgrades.isEmpty())
+
+        // Adding a natural upgrade creates a SentenceCard in the session's topic deck
+        val report = SessionReport(
+            id = "rep-up",
+            sessionID = "sess-up",
+            languageID = "en",
+            topic = "System Design",
+            durationMinutes = 8,
+            naturalUpgrades = parsed.naturalUpgrades,
+        )
+        assertFalse(Sm2Calculator.hasCardForBackText(emptyList(), "en", "It keeps queries fast as traffic scales."))
+        val updatedCards = Sm2Calculator.addNaturalUpgradeToCards(
+            existingCards = emptyList(),
+            report = report,
+            upgrade = parsed.naturalUpgrades.single(),
+            nowMillis = 7_000_000_000_000L,
+        )
+        assertEquals(1, updatedCards.size)
+        assertTrue(Sm2Calculator.hasCardForBackText(updatedCards, "en", "it keeps queries fast as traffic scales."))
+        assertEquals("System Design", updatedCards.single().topic)
+    }
+
+    @Test
+    fun deckPracticeThemeAndPrioritizationFocusActiveDeckCards() {
+        val now = 8_000_000_000_000L
+        val masteredDeckCard = SentenceCard(
+            id = "d-mastered",
+            topic = "Tech Interviews",
+            languageID = "en",
+            frontText = "أحب البرمجة.",
+            backText = "I enjoy building scalable APIs.",
+            explanation = "Mastered.",
+            userOriginalMistake = "",
+            repetitionCount = 5,
+            intervalDays = 30,
+            nextReviewDate = now + 30 * Sm2Calculator.DAY_MILLIS,
+        )
+        val learningDeckCard = SentenceCard(
+            id = "d-learning",
+            topic = "Tech Interviews",
+            languageID = "en",
+            frontText = "أضفت فهرساً للجدول.",
+            backText = "I added an index to speed up the query.",
+            explanation = "Still learning.",
+            userOriginalMistake = "I add index make query fast.",
+            repetitionCount = 0,
+            intervalDays = 0,
+            nextReviewDate = now - 1_000L,
+        )
+        val otherDeckCard = SentenceCard(
+            id = "other-1",
+            topic = "Daily Routine",
+            languageID = "en",
+            frontText = "أشرب القهوة.",
+            backText = "I drink coffee before studying.",
+            explanation = "Other deck.",
+            userOriginalMistake = "",
+            nextReviewDate = now - 5_000L,
+        )
+
+        val prioritized = Sm2Calculator.prioritizeDeckCards(
+            cards = listOf(masteredDeckCard, otherDeckCard, learningDeckCard),
+            languageID = "en",
+            deckTopic = "Tech Interviews",
+            nowMillis = now,
+            limit = 5,
+        )
+        assertEquals(listOf("d-learning", "d-mastered"), prioritized.map { it.id })
+
+        val theme = Sm2Calculator.buildDeckPracticeTheme("Tech Interviews")
+        assertEquals("deck:tech interviews", theme.id)
+        assertEquals("Tech Interviews", theme.title)
+        assertTrue(theme.situation.contains("Tech Interviews"))
     }
 }

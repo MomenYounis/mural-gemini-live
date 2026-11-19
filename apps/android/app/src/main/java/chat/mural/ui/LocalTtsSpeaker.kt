@@ -17,6 +17,7 @@ class LocalTtsSpeaker(context: Context) {
     private var tts: TextToSpeech? = null
     private var ready = false
     private var pendingText: String? = null
+    private var pendingSpeechRate: Float = 1.0f
 
     init {
         runCatching {
@@ -29,23 +30,27 @@ class LocalTtsSpeaker(context: Context) {
                     }
                     ready = true
                     pendingText?.let { text ->
+                        val rate = pendingSpeechRate
                         pendingText = null
-                        speak(text)
+                        speak(text, rate)
                     }
                 }
             }
         }
     }
 
-    fun speak(text: String) {
+    fun speak(text: String, speechRate: Float = 1.0f) {
         val clean = text.trim()
         if (clean.isEmpty()) return
+        val clampedRate = speechRate.coerceIn(0.5f, 1.5f)
         val engine = tts
         if (!ready || engine == null) {
             pendingText = clean
+            pendingSpeechRate = clampedRate
             return
         }
         runCatching {
+            engine.setSpeechRate(clampedRate)
             engine.speak(clean, TextToSpeech.QUEUE_FLUSH, null, "mural-local-tts-${System.nanoTime()}")
         }
     }

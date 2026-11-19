@@ -170,4 +170,24 @@ class GeminiLiveProtocolTest {
     private fun transcript(text: String, interim: Boolean = false, finished: Boolean = false,
         start: Long? = null, end: Long? = null, speaker: Speaker = Speaker.user) =
         GeminiLiveProtocol.Message.Transcription(speaker, text, interim, finished, start, end)
+
+    @Test fun prebuiltVoicesCatalogAndResolutionCoverAllSupportedVoices() {
+        assertEquals(
+            listOf("Kore", "Puck", "Aoede", "Fenrir", "Charon", "Leda", "Orus", "Zephyr"),
+            GeminiLiveProtocol.PREBUILT_VOICES.map { it.name },
+        )
+        assertTrue(GeminiLiveProtocol.PREBUILT_VOICES.all { it.personality.isNotBlank() && it.label.contains(it.name) })
+        assertEquals("Fenrir", GeminiLiveProtocol.resolveVoice("fenrir"))
+        assertEquals("Zephyr", GeminiLiveProtocol.resolveVoice("  ZEPHYR "))
+        assertEquals("Kore", GeminiLiveProtocol.resolveVoice("unknown-voice", "Kore"))
+        assertEquals("Kore", GeminiLiveProtocol.resolveVoice(null))
+
+        val customSetup = GeminiLiveProtocol.setup(
+            GeminiLiveProtocol.Configuration(voice = "Aoede"),
+            "Practise English.",
+        )["setup"]!!.jsonObject
+        val voiceName = customSetup["generationConfig"]!!.jsonObject["speechConfig"]!!.jsonObject["voiceConfig"]!!
+            .jsonObject["prebuiltVoiceConfig"]!!.jsonObject["voiceName"]!!.jsonPrimitive.content
+        assertEquals("Aoede", voiceName)
+    }
 }

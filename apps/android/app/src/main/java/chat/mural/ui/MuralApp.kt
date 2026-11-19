@@ -152,7 +152,16 @@ fun MuralApp(
                                 onChoose = { tab = 0 },
                                 onCurrentTopic = { query -> withConsent(CloudAction.CurrentTopic(query)) },
                             )
-                            2 -> WordsScreen(vm)
+                            2 -> WordsScreen(
+                                vm = vm,
+                                onPracticeDeck = { deck ->
+                                    if (!vm.isRunning) {
+                                        vm.prepareDeckPractice(deck)
+                                        tab = 0
+                                        withConsent(CloudAction.StartVoice)
+                                    }
+                                },
+                            )
                         }
                     }
                     Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(108.dp)

@@ -17,6 +17,30 @@ internal object GeminiLiveProtocol {
     const val ENDPOINT = "https://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
     private val json = Json { ignoreUnknownKeys = true }
 
+    data class VoiceOption(val name: String, val personality: String) {
+        val label: String get() = "$name · $personality"
+    }
+
+    val PREBUILT_VOICES: List<VoiceOption> = listOf(
+        VoiceOption("Kore", "Warm & calm"),
+        VoiceOption("Puck", "Bright & energetic"),
+        VoiceOption("Aoede", "Expressive & melodic"),
+        VoiceOption("Fenrir", "Deep & steady"),
+        VoiceOption("Charon", "Clear & grounded"),
+        VoiceOption("Leda", "Gentle & clear"),
+        VoiceOption("Orus", "Confident & crisp"),
+        VoiceOption("Zephyr", "Light & upbeat"),
+    )
+
+    fun resolveVoice(selected: String?, defaultVoice: String = DEFAULT_VOICE): String {
+        val cleanSelected = selected?.trim().orEmpty()
+        PREBUILT_VOICES.firstOrNull { it.name.equals(cleanSelected, ignoreCase = true) }?.let { return it.name }
+        val cleanDefault = defaultVoice.trim()
+        PREBUILT_VOICES.firstOrNull { it.name.equals(cleanDefault, ignoreCase = true) }?.let { return it.name }
+        if (cleanDefault.matches(Regex("[A-Za-z]{1,40}"))) return cleanDefault
+        return DEFAULT_VOICE
+    }
+
     data class Configuration(val model: String = DEFAULT_MODEL, val voice: String = DEFAULT_VOICE) {
         init {
             require(model.matches(Regex("gemini-[a-zA-Z0-9.-]{1,100}")))

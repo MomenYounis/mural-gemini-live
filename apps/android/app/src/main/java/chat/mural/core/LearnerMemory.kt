@@ -1,9 +1,53 @@
 package chat.mural.core
 
+import java.util.Locale
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 val CEFR_LEVELS: List<String> = listOf("A1", "A2", "B1", "B2", "C1", "C2")
+
+@Serializable
+data class SuggestedTopic(
+    val id: String = "",
+    val title: String,
+    val subtitle: String = "",
+    val situation: String,
+    val isRoleplay: Boolean = false,
+) {
+    fun toConversationTheme(colorIndex: Int = 0): ConversationTheme {
+        val cleanTitle = title.trim()
+        val slug = id.trim().ifEmpty {
+            cleanTitle.lowercase(Locale.ROOT)
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+                .ifEmpty { "topic" }
+        }
+        return ConversationTheme(
+            id = "suggested:$slug",
+            title = cleanTitle,
+            subtitle = subtitle.trim().ifEmpty {
+                if (isRoleplay) "Personalized roleplay" else "Tailored to your interests"
+            },
+            symbol = if (isRoleplay) "sparkles" else "quote.bubble",
+            category = if (isRoleplay) "Roleplay" else "For You",
+            situation = situation.trim(),
+            colorIndex = ((colorIndex % 4) + 4) % 4,
+        )
+    }
+}
+
+@Serializable
+data class SuggestedTopicPayload(
+    val title: String = "",
+    val subtitle: String = "",
+    val situation: String = "",
+    @SerialName("is_roleplay") val isRoleplay: Boolean = false,
+)
+
+@Serializable
+data class SuggestedTopicsRefreshPayload(
+    @SerialName("suggested_topics") val suggestedTopics: List<SuggestedTopicPayload> = emptyList(),
+)
 
 @Serializable
 data class RecentTopicMemory(
@@ -22,6 +66,7 @@ data class LearnerMemory(
     val manualLevelOverride: String? = null,
     val speakingGuidance: String = "",
     val recentTopics: List<RecentTopicMemory> = emptyList(),
+    val suggestedTopics: List<SuggestedTopic> = emptyList(),
     val autoUpdateEnabled: Boolean = true,
     val updatedAtMillis: Long = 0L,
 ) {
@@ -35,7 +80,8 @@ data class LearnerMemory(
             interestsAndGoals.isNotEmpty() ||
             effectiveLevel.isNotEmpty() ||
             speakingGuidance.isNotBlank() ||
-            recentTopics.isNotEmpty()
+            recentTopics.isNotEmpty() ||
+            suggestedTopics.isNotEmpty()
 
     fun sanitized(): LearnerMemory {
         val cleanProfile = sanitizeFactList(profileFacts, MAX_PROFILE_FACTS)
@@ -69,6 +115,8 @@ data class LearnerMemory(
             .filter { item -> item.sessionID.isEmpty() || seenSessions.add(item.sessionID) }
             .take(MAX_RECENT_TOPICS)
             .toList()
+        val recentExclusions = cleanTopics.take(5).map { it.topic }.toSet()
+        val cleanSuggested = sanitizeSuggestedList(suggestedTopics, excludeTitles = recentExclusions)
 
         return copy(
             profileFacts = cleanProfile,
@@ -77,6 +125,7 @@ data class LearnerMemory(
             manualLevelOverride = cleanOverride,
             speakingGuidance = cleanGuidance,
             recentTopics = cleanTopics,
+            suggestedTopics = cleanSuggested,
         )
     }
 
@@ -101,6 +150,7 @@ data class LearnerMemory(
             lines += "Interests & goals: ${clean.interestsAndGoals.joinToString("; ")}"
         }
 
+        if (lines.isEmpty() && clean.recentTopics.isEmpty()) return ""
         val headerOnly = lines.joinToString("\n")
         if (clean.recentTopics.isEmpty()) {
             return headerOnly.take(boundedMax)
@@ -150,6 +200,10 @@ data class LearnerMemory(
         const val MAX_TOPIC_SUMMARY_CHARS = 160
         const val MAX_FOLLOW_UP_HINT_CHARS = 140
         const val DEFAULT_PROMPT_MAX_CHARS = 1800
+        const val MAX_SUGGESTED_TOPICS = 3
+        const val MAX_SUGGESTED_TITLE_CHARS = 50
+        const val MAX_SUGGESTED_SUBTITLE_CHARS = 75
+        const val MAX_SUGGESTED_SITUATION_CHARS = 240
 
         private val SENSITIVE_KEYWORDS = Regex(
             "\\b(password|passcode|pin code|secret key|api key|credit card|debit card|cvv|cvc|ssn|social security|national id|passport number|bank account|routing number|iban)\\b",
@@ -188,6 +242,43 @@ data class LearnerMemory(
             }
             return out
         }
+
+        internal fun slugForTitle(title: String): String =
+            title.lowercase(Locale.ROOT)
+                .replace(Regex("[^a-z0-9]+"), "-")
+                .trim('-')
+                .ifEmpty { "topic" }
+
+        internal fun sanitizeSuggestedList(
+            items: List<SuggestedTopic>,
+            excludeTitles: Set<String> = emptySet(),
+            maxItems: Int = MAX_SUGGESTED_TOPICS,
+        ): List<SuggestedTopic> {
+            val bounded = maxItems.coerceIn(0, MAX_SUGGESTED_TOPICS)
+            if (bounded == 0) return emptyList()
+            val excluded = excludeTitles.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }.toSet()
+            val seen = mutableSetOf<String>()
+            val out = mutableListOf<SuggestedTopic>()
+            for (raw in items) {
+                val title = cleanText(raw.title, MAX_SUGGESTED_TITLE_CHARS)
+                val situation = cleanText(raw.situation, MAX_SUGGESTED_SITUATION_CHARS)
+                val subtitle = cleanText(raw.subtitle, MAX_SUGGESTED_SUBTITLE_CHARS)
+                if (title.isEmpty() || situation.isEmpty()) continue
+                if (looksLikeSensitiveSecret(title) || looksLikeSensitiveSecret(subtitle) || looksLikeSensitiveSecret(situation)) continue
+                val key = title.lowercase(Locale.ROOT)
+                if (key in excluded || !seen.add(key)) continue
+                val cleanId = cleanText(raw.id, 60).ifEmpty { slugForTitle(title) }
+                out += SuggestedTopic(
+                    id = cleanId,
+                    title = title,
+                    subtitle = subtitle,
+                    situation = situation,
+                    isRoleplay = raw.isRoleplay,
+                )
+                if (out.size >= bounded) break
+            }
+            return out
+        }
     }
 }
 
@@ -200,9 +291,16 @@ data class LearnerMemoryUpdatePayload(
     @SerialName("session_topic") val sessionTopic: String = "",
     @SerialName("session_summary") val sessionSummary: String = "",
     @SerialName("follow_up_hint") val followUpHint: String = "",
+    @SerialName("suggested_topics") val suggestedTopics: List<SuggestedTopicPayload> = emptyList(),
 )
 
 object LearnerMemoryReducer {
+    private val ROLEPLAY_KEYWORDS = listOf(
+        "interview", "work", "job", "career", "office", "meeting",
+        "travel", "trip", "airport", "hotel", "restaurant", "cafe",
+        "coffee", "doctor", "hospital", "shop", "market",
+    )
+
     fun seedFromLegacyInterests(memory: LearnerMemory, legacyInterests: String): LearnerMemory {
         val cleanMemory = memory.sanitized()
         if (cleanMemory.interestsAndGoals.isNotEmpty() || legacyInterests.isBlank()) return cleanMemory
@@ -216,6 +314,94 @@ object LearnerMemoryReducer {
 
     fun syncLegacyInterestsString(memory: LearnerMemory): String =
         memory.sanitized().interestsAndGoals.joinToString(", ").take(500)
+
+    fun sanitizeSuggestedPayloads(
+        payloads: List<SuggestedTopicPayload>,
+        recentTopics: List<RecentTopicMemory> = emptyList(),
+        excludeTitles: Set<String> = emptySet(),
+    ): List<SuggestedTopic> {
+        val recentExclusions = recentTopics.take(5).map { it.topic }.toSet()
+        val combinedExclude = (recentExclusions + excludeTitles).map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val mapped = payloads.map { item ->
+            SuggestedTopic(
+                id = LearnerMemory.slugForTitle(item.title),
+                title = item.title,
+                subtitle = item.subtitle,
+                situation = item.situation,
+                isRoleplay = item.isRoleplay,
+            )
+        }
+        return LearnerMemory.sanitizeSuggestedList(mapped, excludeTitles = combinedExclude)
+    }
+
+    fun fallbackSuggestedTopics(
+        memory: LearnerMemory,
+        excludeTitles: Set<String> = emptySet(),
+        maxItems: Int = LearnerMemory.MAX_SUGGESTED_TOPICS,
+    ): List<SuggestedTopic> {
+        val clean = memory.sanitized()
+        val seeds = (clean.interestsAndGoals + clean.profileFacts).distinct()
+        if (seeds.isEmpty()) return emptyList()
+
+        val recentTitles = clean.recentTopics.take(5).map { it.topic.trim().lowercase(Locale.ROOT) }.toSet()
+        val extraExcluded = excludeTitles.map { it.trim().lowercase(Locale.ROOT) }.toSet()
+        val blocked = recentTitles + extraExcluded
+
+        val candidates = mutableListOf<SuggestedTopic>()
+        for (seed in seeds) {
+            val lower = seed.lowercase(Locale.ROOT)
+            val isRoleplay = ROLEPLAY_KEYWORDS.any { lower.contains(it) }
+            val primaryTitle = LearnerMemory.cleanText(
+                if (isRoleplay) "$seed Practice" else seed,
+                LearnerMemory.MAX_SUGGESTED_TITLE_CHARS,
+            )
+            candidates += SuggestedTopic(
+                id = LearnerMemory.slugForTitle(primaryTitle),
+                title = primaryTitle,
+                subtitle = if (isRoleplay) "Interactive roleplay scenario" else "Personalized from your goals",
+                situation = if (isRoleplay) {
+                    "Roleplay a realistic scenario involving $seed. Stay natural and keep questions practical and engaging."
+                } else {
+                    "Discuss $seed naturally from the learner's own experience and opinions, asking curious follow-up questions."
+                },
+                isRoleplay = isRoleplay,
+            )
+        }
+        // Secondary angles ensure offline refresh can rotate fresh ideas even with a small profile.
+        for (seed in seeds) {
+            val lower = seed.lowercase(Locale.ROOT)
+            val isRoleplay = ROLEPLAY_KEYWORDS.any { lower.contains(it) }
+            val altTitle = LearnerMemory.cleanText(
+                if (isRoleplay) "Real-Life $seed Scenario" else "Deep Dive: $seed",
+                LearnerMemory.MAX_SUGGESTED_TITLE_CHARS,
+            )
+            candidates += SuggestedTopic(
+                id = LearnerMemory.slugForTitle(altTitle),
+                title = altTitle,
+                subtitle = if (isRoleplay) "Practice a realistic conversation" else "Explore opinions & stories",
+                situation = if (isRoleplay) {
+                    "Act out an everyday real-life situation around $seed with gentle, natural turn-taking."
+                } else {
+                    "Explore interesting stories, lessons learned, or future plans related to $seed."
+                },
+                isRoleplay = isRoleplay,
+            )
+        }
+
+        return LearnerMemory.sanitizeSuggestedList(
+            items = candidates,
+            excludeTitles = blocked,
+            maxItems = maxItems,
+        )
+    }
+
+    fun effectiveSuggestedTopics(memory: LearnerMemory): List<SuggestedTopic> {
+        val clean = memory.sanitized()
+        val recentTitles = clean.recentTopics.take(5).map { it.topic.trim().lowercase(Locale.ROOT) }.toSet()
+        val stored = LearnerMemory.sanitizeSuggestedList(clean.suggestedTopics, excludeTitles = recentTitles)
+        if (stored.isNotEmpty()) return stored
+        return fallbackSuggestedTopics(clean)
+    }
 
     fun merge(
         current: LearnerMemory,
@@ -279,6 +465,14 @@ object LearnerMemoryReducer {
             base.recentTopics
         }
 
+        val recentExclusions = updatedTopics.take(5).map { it.topic }.toSet()
+        val incomingSuggested = sanitizeSuggestedPayloads(payload.suggestedTopics, updatedTopics)
+        val updatedSuggested = if (incomingSuggested.isNotEmpty()) {
+            incomingSuggested
+        } else {
+            LearnerMemory.sanitizeSuggestedList(base.suggestedTopics, excludeTitles = recentExclusions)
+        }
+
         return base.copy(
             profileFacts = updatedProfile,
             interestsAndGoals = updatedInterests,
@@ -286,6 +480,7 @@ object LearnerMemoryReducer {
             manualLevelOverride = base.manualLevelOverride,
             speakingGuidance = updatedGuidance,
             recentTopics = updatedTopics,
+            suggestedTopics = updatedSuggested,
             autoUpdateEnabled = base.autoUpdateEnabled,
             updatedAtMillis = nowMillis,
         ).sanitized()
@@ -318,6 +513,7 @@ object LearnerMemoryReducer {
             val mergedEstimated = existing.estimatedLevel.ifEmpty { cleanIncoming.estimatedLevel }
             val mergedOverride = existing.manualLevelOverride ?: cleanIncoming.manualLevelOverride
             val mergedGuidance = existing.speakingGuidance.ifEmpty { cleanIncoming.speakingGuidance }
+            val mergedSuggested = existing.suggestedTopics.ifEmpty { cleanIncoming.suggestedTopics }
             out[langId] = existing.copy(
                 profileFacts = mergedProfile,
                 interestsAndGoals = mergedInterests,
@@ -325,6 +521,7 @@ object LearnerMemoryReducer {
                 manualLevelOverride = mergedOverride,
                 speakingGuidance = mergedGuidance,
                 recentTopics = mergedTopics,
+                suggestedTopics = mergedSuggested,
                 updatedAtMillis = maxOf(existing.updatedAtMillis, cleanIncoming.updatedAtMillis),
             ).sanitized()
         }

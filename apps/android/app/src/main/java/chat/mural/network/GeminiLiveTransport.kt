@@ -106,14 +106,18 @@ internal class GeminiLiveTransport private constructor(
 
     suspend fun connect(readCredential: () -> String?, request: LiveSessionRequest) {
         require(request.offer == LiveOffer.NativePCM) { "Gemini Live requires native PCM" }
-        connect(readCredential, request.instructions, request.history, request.language)
+        connect(readCredential, request.instructions, request.history, request.language, request.voice)
     }
 
     @Suppress("UNUSED_PARAMETER")
     suspend fun connect(readCredential: () -> String?, instructions: String, history: JsonArray = JsonArray(emptyList()),
-        language: String? = null) = withContext(control) {
+        language: String? = null, voice: String? = null) = withContext(control) {
         retire()
-        val attempt = Attempt(generation.incrementAndGet(), readCredential, instructions, history, audioFactory(worker))
+        val resolvedConfig = GeminiLiveProtocol.Configuration(
+            model = configuration.model,
+            voice = GeminiLiveProtocol.resolveVoice(voice, configuration.voice),
+        )
+        val attempt = Attempt(generation.incrementAndGet(), readCredential, instructions, history, audioFactory(worker), resolvedConfig)
         active = attempt
         try {
             withTimeout(20_000) { open(attempt, resumed = false) }
@@ -236,7 +240,7 @@ internal class GeminiLiveTransport private constructor(
         attempt.socket = sockets.open(request, object : GeminiSocketListener {
             override fun opened() { worker.launch {
                 if (!current(attempt, epoch)) return@launch
-                val setup = GeminiLiveProtocol.setup(configuration, attempt.instructions,
+                val setup = GeminiLiveProtocol.setup(attempt.configuration, attempt.instructions,
                     if (resumed) attempt.resumptionHandle else null, !resumed && attempt.history.isNotEmpty())
                 if (!sendNow(attempt, setup, requireReady = false)) setupDone.completeExceptionally(ConnectionException("Google could not accept the voice setup."))
             } }
@@ -599,7 +603,7 @@ internal class GeminiLiveTransport private constructor(
         return next
     }
 
-    private class Attempt(val id: Long, val readCredential: () -> String?, val instructions: String, var history: JsonArray, val audio: GeminiAudio) {
+    private class Attempt(val id: Long, val readCredential: () -> String?, val instructions: String, var history: JsonArray, val audio: GeminiAudio, val configuration: GeminiLiveProtocol.Configuration) {
         val cleaned = AtomicBoolean(); val closing = AtomicBoolean(); val failed = AtomicBoolean()
         @Volatile var ready = false
         @Volatile var muted = false
