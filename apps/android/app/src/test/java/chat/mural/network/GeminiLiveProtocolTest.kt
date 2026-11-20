@@ -16,6 +16,12 @@ class GeminiLiveProtocolTest {
         assertEquals("Kore", setup["generationConfig"]!!.jsonObject["speechConfig"]!!.jsonObject["voiceConfig"]!!.jsonObject["prebuiltVoiceConfig"]!!.jsonObject["voiceName"]!!.jsonPrimitive.content)
         assertEquals("VERBATIM", setup["inputAudioTranscription"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
         assertEquals("VERBATIM", setup["outputAudioTranscription"]!!.jsonObject["mode"]!!.jsonPrimitive.content)
+        val vad = setup["realtimeInputConfig"]!!.jsonObject["automaticActivityDetection"]!!.jsonObject
+        assertFalse(vad["disabled"]!!.jsonPrimitive.boolean)
+        assertEquals("START_SENSITIVITY_HIGH", vad["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_LOW", vad["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(400, vad["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(1_200, vad["silenceDurationMs"]!!.jsonPrimitive.int)
         assertFalse(setup["inputAudioTranscription"]!!.jsonObject.containsKey("wordTimestamp"))
         assertFalse(setup["outputAudioTranscription"]!!.jsonObject.containsKey("wordTimestamp"))
         assertFalse(setup.containsKey("responseModalities"))

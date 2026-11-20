@@ -4,11 +4,26 @@ import chat.mural.core.AccountFailure
 import chat.mural.network.HostedFailure
 import chat.mural.core.Archive
 import chat.mural.core.ArchiveCodec
+import chat.mural.core.Assessment
+import chat.mural.core.EvidenceKind
 import chat.mural.core.Fragment
+import chat.mural.core.Outcome
 import chat.mural.core.SessionRecord
 import chat.mural.core.Speaker
+import chat.mural.core.WordProposal
 import chat.mural.network.APIClient
 import chat.mural.network.CredentialStore
+import chat.mural.network.GroqTranscriptionResult
+import chat.mural.network.GroqWhisperModel
+import chat.mural.network.TurnAudioBuffer
+import chat.mural.network.TurnTranscriber
+import kotlin.math.sin
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -126,6 +141,223 @@ class MuralViewModelTest {
         assertEquals(R.string.hosted_balance_checking, errorMessageRes(HostedFailure.Http(503, "provider_reconciliation_required")))
         assertEquals(R.string.hosted_help_funding, errorMessageRes(HostedFailure.Http(503, "helper_session_funding_unavailable")))
         assertEquals(R.string.error_request_refused, errorMessageRes(HostedFailure.Http(502, "helper_output_refused")))
+    }
+
+    @Test fun callDurationTrackerStaysMonotonicAcrossReadsAndAdvancesAccurately() {
+        var nowMillis = 10_000L
+        val tracker = CallDurationTracker { nowMillis }
+
+        assertEquals(null, tracker.activeCallStartedAtMillis)
+        assertEquals(0L, tracker.elapsedSeconds())
+
+        assertEquals(0L, tracker.startIfNeeded())
+        assertEquals(10_000L, tracker.activeCallStartedAtMillis)
+
+        nowMillis = 10_999L
+        assertEquals(0L, tracker.elapsedSeconds())
+
+        nowMillis = 11_000L
+        assertEquals(1L, tracker.elapsedSeconds())
+
+        nowMillis = 75_400L
+        assertEquals(65L, tracker.elapsedSeconds())
+
+        // Even if the clock returned an earlier value, elapsed seconds stays monotonic.
+        nowMillis = 70_000L
+        assertEquals(65L, tracker.elapsedSeconds())
+
+        nowMillis = 10_000L + 3_661_000L
+        assertEquals(3_661L, tracker.elapsedSeconds())
+    }
+
+    @Test fun callDurationTrackerDoesNotResetWhileActive() {
+        var nowMillis = 50_000L
+        val tracker = CallDurationTracker { nowMillis }
+
+        assertEquals(0L, tracker.startIfNeeded())
+        nowMillis = 92_000L
+        assertEquals(42L, tracker.elapsedSeconds())
+
+        // Calling startIfNeeded() again (e.g. during a reconnect/re-ready) keeps the original start timestamp.
+        assertEquals(42L, tracker.startIfNeeded())
+        assertEquals(50_000L, tracker.activeCallStartedAtMillis)
+
+        nowMillis = 100_000L
+        assertEquals(50L, tracker.elapsedSeconds())
+    }
+
+    @Test fun callDurationTrackerResetsCleanlyBetweenSessions() {
+        var nowMillis = 100_000L
+        val tracker = CallDurationTracker { nowMillis }
+
+        tracker.startIfNeeded()
+        nowMillis = 135_000L
+        assertEquals(35L, tracker.elapsedSeconds())
+
+        assertEquals(0L, tracker.reset())
+        assertEquals(null, tracker.activeCallStartedAtMillis)
+        assertEquals(0L, tracker.elapsedSeconds())
+
+        nowMillis = 200_000L
+        assertEquals(0L, tracker.startIfNeeded())
+        assertEquals(200_000L, tracker.activeCallStartedAtMillis)
+        nowMillis = 207_000L
+        assertEquals(7L, tracker.elapsedSeconds())
+    }
+
+    @Test fun formatCallElapsedTimeFormatsMinutesHoursAndClampsNegatives() {
+        assertEquals("00:00", chat.mural.ui.formatCallElapsedTime(-5L))
+        assertEquals("00:00", chat.mural.ui.formatCallElapsedTime(0L))
+        assertEquals("01:05", chat.mural.ui.formatCallElapsedTime(65L))
+        assertEquals("1:01:01", chat.mural.ui.formatCallElapsedTime(3_661L))
+    }
+
+    private fun spokenTurnPcm(durationMs: Int = 800): ByteArray {
+        val sampleCount = durationMs * 16
+        val bytes = ByteArray(sampleCount * 2)
+        for (i in 0 until sampleCount) {
+            val sample = (4_000.0 * sin(2.0 * Math.PI * 350.0 * i / 16_000.0)).toInt()
+            bytes[i * 2] = (sample and 0xFF).toByte()
+            bytes[i * 2 + 1] = ((sample shr 8) and 0xFF).toByte()
+        }
+        return bytes
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun groqRefinementUpdatesFragmentViaCorrectFragmentAndPostSessionAwaitsInFlightJob() = runTest {
+        val session = SessionRecord(id = "11111111-1111-1111-1111-111111111111", languageID = "en").apply {
+            append(Fragment(id = "frag-1", speaker = Speaker.user, text = "I goed to work", startMS = 0, endMS = 1_000))
+        }
+        val passage = session.passages.single()
+        session.assessments += Assessment(
+            passageID = passage.id,
+            revisionKey = passage.revisionKey,
+            outcome = Outcome.partial,
+            suggestedLevel = 2,
+            nextGoal = "past tense",
+            capability = "narration",
+            words = listOf(WordProposal("go", "go", "goed", EvidenceKind.lapse, 0.9, listOf("frag-1"), "I goed to work", "en")),
+            textAssemblyVersion = 2,
+        )
+
+        val gate = CompletableDeferred<GroqTranscriptionResult>()
+        val transcriber = object : TurnTranscriber {
+            override suspend fun transcribe(pcm16: ByteArray, model: GroqWhisperModel, promptHint: String): GroqTranscriptionResult =
+                gate.await()
+        }
+        val coordinator = GroqRefinementCoordinator(this, transcriber)
+
+        val submitted = coordinator.submit(
+            sessionID = session.id,
+            fragmentId = "frag-1",
+            pcm16 = spokenTurnPcm(),
+            model = GroqWhisperModel.LARGE_V3,
+            promptHint = "Mural",
+            onRefined = { _, fragmentId, refinedText ->
+                session.correctFragment(fragmentId, refinedText)
+            },
+        )
+        assertTrue(submitted)
+        assertTrue(coordinator.hasPending(session.id))
+
+        var awaitedResult: Boolean? = null
+        val hangUpJob = launch {
+            awaitedResult = coordinator.awaitSession(session.id, timeoutMillis = 4_000L)
+        }
+        runCurrent()
+        assertFalse(hangUpJob.isCompleted)
+
+        gate.complete(GroqTranscriptionResult.Success("I went to work yesterday."))
+        runCurrent()
+        assertTrue(hangUpJob.isCompleted)
+        assertEquals(true, awaitedResult)
+        assertFalse(coordinator.hasPending(session.id))
+
+        val updated = session.fragments.single()
+        assertEquals("I went to work yesterday.", updated.text)
+        assertEquals(1, updated.revision)
+        assertEquals(listOf("I goed to work"), updated.previousTexts)
+        assertTrue(session.assessments.isEmpty())
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun groqRefinementSkipsSilenceHandlesFailuresGracefullyAndRespectsTimeout() = runTest {
+        val session = SessionRecord(id = "22222222-2222-2222-2222-222222222222", languageID = "en").apply {
+            append(Fragment(id = "frag-1", speaker = Speaker.user, text = "Gemini fallback text", startMS = 0, endMS = 1_000))
+        }
+        var calls = 0
+        val hangingGate = CompletableDeferred<GroqTranscriptionResult>()
+        var nextResult: GroqTranscriptionResult = GroqTranscriptionResult.Failure(GroqTranscriptionResult.FailureKind.UNAUTHORIZED, 401)
+        val transcriber = object : TurnTranscriber {
+            override suspend fun transcribe(pcm16: ByteArray, model: GroqWhisperModel, promptHint: String): GroqTranscriptionResult {
+                calls++
+                return if (calls == 3) hangingGate.await() else nextResult
+            }
+        }
+        val coordinator = GroqRefinementCoordinator(this, transcriber)
+
+        // Silent clip must be skipped before network
+        assertFalse(coordinator.submit(session.id, "frag-1", ByteArray(TurnAudioBuffer.MIN_SPEECH_BYTES), GroqWhisperModel.LARGE_V3, "Mural", { _, _, _ -> }))
+        assertEquals(0, calls)
+
+        // 401 triggers auth callback without altering Gemini fragment
+        var authErrors = 0
+        assertTrue(
+            coordinator.submit(
+                sessionID = session.id,
+                fragmentId = "frag-1",
+                pcm16 = spokenTurnPcm(),
+                model = GroqWhisperModel.LARGE_V3,
+                promptHint = "Mural",
+                onRefined = { _, fId, text -> session.correctFragment(fId, text) },
+                onAuthFailure = { authErrors++ },
+            ),
+        )
+        runCurrent()
+        assertEquals(1, authErrors)
+        assertEquals("Gemini fallback text", session.fragments.single().text)
+
+        // 429 fails silently without auth error and preserves Gemini fragment
+        nextResult = GroqTranscriptionResult.Failure(GroqTranscriptionResult.FailureKind.RATE_LIMITED, 429)
+        assertTrue(
+            coordinator.submit(
+                sessionID = session.id,
+                fragmentId = "frag-1",
+                pcm16 = spokenTurnPcm(),
+                model = GroqWhisperModel.LARGE_V3,
+                promptHint = "Mural",
+                onRefined = { _, fId, text -> session.correctFragment(fId, text) },
+                onAuthFailure = { authErrors++ },
+            ),
+        )
+        runCurrent()
+        assertEquals(1, authErrors)
+        assertEquals("Gemini fallback text", session.fragments.single().text)
+
+        // Post-session awaitSession bounds waiting at timeout without cancelling/crashing
+        assertTrue(
+            coordinator.submit(
+                sessionID = session.id,
+                fragmentId = "frag-1",
+                pcm16 = spokenTurnPcm(),
+                model = GroqWhisperModel.LARGE_V3,
+                promptHint = "Mural",
+                onRefined = { _, fId, text -> session.correctFragment(fId, text) },
+            ),
+        )
+        var completedInTime: Boolean? = null
+        val waitJob = launch {
+            completedInTime = coordinator.awaitSession(session.id, timeoutMillis = 4_000L)
+        }
+        runCurrent()
+        advanceTimeBy(4_001L)
+        runCurrent()
+        assertTrue(waitJob.isCompleted)
+        assertEquals(false, completedInTime)
+        assertEquals("Gemini fallback text", session.fragments.single().text)
+
+        coordinator.cancelSession(session.id)
+        assertFalse(coordinator.hasPending(session.id))
     }
 
 }

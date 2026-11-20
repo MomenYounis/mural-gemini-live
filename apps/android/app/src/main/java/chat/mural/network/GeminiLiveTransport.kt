@@ -103,21 +103,22 @@ internal class GeminiLiveTransport private constructor(
     @Volatile private var active: Attempt? = null
     val started: Boolean get() = active?.ready == true
     val isMuted: Boolean get() = active?.muted == true
+    internal val activeTurnAudioBufferedBytes: Int get() = active?.turnAudioBuffer?.bufferedBytes ?: 0
 
     suspend fun connect(readCredential: () -> String?, request: LiveSessionRequest) {
         require(request.offer == LiveOffer.NativePCM) { "Gemini Live requires native PCM" }
-        connect(readCredential, request.instructions, request.history, request.language, request.voice)
+        connect(readCredential, request.instructions, request.history, request.language, request.voice, request.captureUserTurnAudio)
     }
 
     @Suppress("UNUSED_PARAMETER")
     suspend fun connect(readCredential: () -> String?, instructions: String, history: JsonArray = JsonArray(emptyList()),
-        language: String? = null, voice: String? = null) = withContext(control) {
+        language: String? = null, voice: String? = null, captureUserTurnAudio: Boolean = false) = withContext(control) {
         retire()
         val resolvedConfig = GeminiLiveProtocol.Configuration(
             model = configuration.model,
             voice = GeminiLiveProtocol.resolveVoice(voice, configuration.voice),
         )
-        val attempt = Attempt(generation.incrementAndGet(), readCredential, instructions, history, audioFactory(worker), resolvedConfig)
+        val attempt = Attempt(generation.incrementAndGet(), readCredential, instructions, history, audioFactory(worker), resolvedConfig, captureUserTurnAudio)
         active = attempt
         try {
             withTimeout(20_000) { open(attempt, resumed = false) }
@@ -207,7 +208,7 @@ internal class GeminiLiveTransport private constructor(
     fun close() {
         val attempt = active ?: return
         if (!attempt.closing.compareAndSet(false, true)) return
-        attempt.ready = false; attempt.audio.mute(true)
+        attempt.ready = false; attempt.audio.mute(true); attempt.turnAudioBuffer?.clear()
         worker.launch {
             if (!current(attempt)) return@launch
             val closingGeneration = retire()
@@ -216,7 +217,7 @@ internal class GeminiLiveTransport private constructor(
     }
 
     fun disconnect() {
-        active?.let { it.closing.set(true); it.ready = false; it.audio.mute(true) }
+        active?.let { it.closing.set(true); it.ready = false; it.audio.mute(true); it.turnAudioBuffer?.clear() }
         worker.launch { retire() }
     }
 
@@ -312,7 +313,7 @@ internal class GeminiLiveTransport private constructor(
                 attempt.modelActive = true
                 attempt.turnReceivedAudio = true
                 attempt.inputFinalizer?.cancel()
-                attempt.assembler.finishInput()?.let { emitFragment(attempt, it) }
+                attempt.assembler.finishInput()?.let { onUserTurnFinalized(attempt, it, emitTranscript = true) }
                 val audioGeneration = attempt.audioGeneration
                 if (!attempt.audio.enqueue(message.bytes, audioGeneration) && current(attempt) &&
                     !attempt.closing.get() && attempt.audioGeneration == audioGeneration) {
@@ -330,17 +331,21 @@ internal class GeminiLiveTransport private constructor(
                 val timeline = maxOf(attempt.audio.inputMilliseconds, attempt.audio.playedMilliseconds)
                 val fragment = attempt.assembler.append(message, timeline)
                 if (message.speaker == Speaker.assistant) attempt.modelActive = true
+                else if (attempt.activeUserTurnStartMs == null) {
+                    attempt.activeUserTurnStartMs = minOf(fragment.startMS, attempt.audio.inputMilliseconds)
+                }
                 // Captions are visible immediately. Assistant evidence is finalized only after
                 // actual native playback, so unheard queued speech never becomes evidence.
                 emitFragment(attempt, if (message.speaker == Speaker.assistant) fragment.copy(interim = true) else fragment)
                 if (message.speaker == Speaker.user) {
                     attempt.inputFinalizer?.cancel()
-                    if (message.finished) attempt.assembler.finishInput()
-                    else if (!message.interim) attempt.inputFinalizer = worker.launch {
+                    if (message.finished) {
+                        attempt.assembler.finishInput()?.let { onUserTurnFinalized(attempt, it, emitTranscript = fragment.interim) }
+                    } else if (!message.interim) attempt.inputFinalizer = worker.launch {
                         // Input transcripts are independent of output, including after an idle
                         // notification. A bounded commit avoids waiting for a tutor response.
-                        delay(750)
-                        if (current(attempt)) attempt.assembler.finishInput()?.let { emitFragment(attempt, it) }
+                        delay(INPUT_FINALIZE_DELAY_MS)
+                        if (current(attempt)) attempt.assembler.finishInput()?.let { onUserTurnFinalized(attempt, it, emitTranscript = true) }
                     }
                 }
             }
@@ -356,7 +361,7 @@ internal class GeminiLiveTransport private constructor(
                 if (!attempt.ignoreUntilTurnComplete) attempt.replyRequested = false
                 attempt.ignoreUntilTurnComplete = false
                 attempt.inputFinalizer?.cancel()
-                attempt.assembler.finishInput()?.let { emitFragment(attempt, it) }
+                attempt.assembler.finishInput()?.let { onUserTurnFinalized(attempt, it, emitTranscript = true) }
                 emit(attempt, LiveEvent.TurnComplete)
                 val audioGeneration = attempt.audioGeneration
                 val pendingOutput = attempt.assembler.takeOutput()
@@ -380,6 +385,9 @@ internal class GeminiLiveTransport private constructor(
             GeminiLiveProtocol.Message.Processing -> { attempt.modelActive = true; emit(attempt, LiveEvent.Processing) }
             is GeminiLiveProtocol.Message.VoiceActivity -> {
                 if (message.started) {
+                    if (attempt.activeUserTurnStartMs == null) {
+                        attempt.activeUserTurnStartMs = attempt.audio.inputMilliseconds
+                    }
                     val generating = attempt.modelActive
                     interrupt(attempt)
                     attempt.ignoreUntilTurnComplete = generating
@@ -516,6 +524,7 @@ internal class GeminiLiveTransport private constructor(
         emit(attempt, LiveEvent.Reconnecting)
         interrupt(attempt)
         attempt.inputFinalizer?.cancel()
+        attempt.activeUserTurnStartMs = null
         attempt.assembler.resumed(maxOf(attempt.audio.inputMilliseconds, attempt.audio.playedMilliseconds))
         attempt.reconnect = worker.launch {
             attempt.goAway?.cancel(); attempt.goAway = null
@@ -548,6 +557,7 @@ internal class GeminiLiveTransport private constructor(
     private fun sendAudio(attempt: Attempt, pcm: ByteArray): Boolean {
         if (!current(attempt) || attempt.closing.get()) return true
         if (!attempt.ready || attempt.muted) return true // Explicit recoverable gap, never replay captured PCM.
+        attempt.turnAudioBuffer?.append(pcm, attempt.audio.inputMilliseconds)
         val socket = attempt.socket ?: return true
         if (socket.queueSize() > MAX_SEND_QUEUE_BYTES) {
             worker.launch { fail(attempt, "The network cannot keep up with microphone audio. Check your connection and try again.") }
@@ -570,6 +580,32 @@ internal class GeminiLiveTransport private constructor(
     private fun authorized(attempt: Attempt): Boolean {
         val credential = try { attempt.readCredential() } catch (_: Exception) { null } ?: return false
         return attempt.credentialFingerprint?.let { MessageDigest.isEqual(it, digest(credential.trim())) } == true
+    }
+
+    private fun onUserTurnFinalized(attempt: Attempt, fragment: GeminiTranscriptAssembler.Fragment, emitTranscript: Boolean) {
+        if (emitTranscript) emitFragment(attempt, fragment)
+        val trackedStart = attempt.activeUserTurnStartMs
+        attempt.activeUserTurnStartMs = null
+        val buffer = attempt.turnAudioBuffer ?: return
+        if (fragment.speaker != Speaker.user) return
+
+        val sliceStartMs = if (fragment.estimatedTiming && trackedStart != null) {
+            minOf(fragment.startMS, trackedStart)
+        } else {
+            fragment.startMS
+        }
+        val sliceEndMs = if (fragment.estimatedTiming) {
+            maxOf(fragment.endMS, attempt.audio.inputMilliseconds)
+        } else {
+            fragment.endMS
+        }
+        var pcm = buffer.slice(sliceStartMs, sliceEndMs)
+        if (pcm.isEmpty() && !fragment.estimatedTiming && trackedStart != null) {
+            pcm = buffer.slice(trackedStart, attempt.audio.inputMilliseconds)
+        }
+        if (pcm.isNotEmpty()) {
+            emit(attempt, LiveEvent.UserTurnAudio(fragment.id, pcm))
+        }
     }
 
     private fun emitFragment(attempt: Attempt, fragment: GeminiTranscriptAssembler.Fragment) = emit(attempt,
@@ -595,7 +631,8 @@ internal class GeminiLiveTransport private constructor(
             attempt.scopeCompletion?.dispose(); attempt.goAway?.cancel(); attempt.reconnect?.cancel(); attempt.inputFinalizer?.cancel()
             attempt.toolTimeouts.values.forEach { it.cancel() }; attempt.toolTimeouts.clear(); attempt.pendingTools.clear()
             attempt.setupDone.cancel(); attempt.socket?.close(); attempt.socket?.cancel(); attempt.socket = null
-            attempt.audio.close(); attempt.resumptionHandle = null; attempt.credentialFingerprint?.fill(0); attempt.credentialFingerprint = null
+            attempt.audio.close(); attempt.turnAudioBuffer?.clear(); attempt.activeUserTurnStartMs = null
+            attempt.resumptionHandle = null; attempt.credentialFingerprint?.fill(0); attempt.credentialFingerprint = null
             attempt.history = JsonArray(emptyList())
             attempt.pendingContext = null; attempt.pendingReply = null
         }
@@ -603,7 +640,7 @@ internal class GeminiLiveTransport private constructor(
         return next
     }
 
-    private class Attempt(val id: Long, val readCredential: () -> String?, val instructions: String, var history: JsonArray, val audio: GeminiAudio, val configuration: GeminiLiveProtocol.Configuration) {
+    private class Attempt(val id: Long, val readCredential: () -> String?, val instructions: String, var history: JsonArray, val audio: GeminiAudio, val configuration: GeminiLiveProtocol.Configuration, captureUserTurnAudio: Boolean = false) {
         val cleaned = AtomicBoolean(); val closing = AtomicBoolean(); val failed = AtomicBoolean()
         @Volatile var ready = false
         @Volatile var muted = false
@@ -625,6 +662,8 @@ internal class GeminiLiveTransport private constructor(
         var pendingReply: LiveOperation? = null
         var turnReceivedAudio = false
         var inputFinalizer: Job? = null
+        val turnAudioBuffer: TurnAudioBuffer? = if (captureUserTurnAudio) TurnAudioBuffer() else null
+        var activeUserTurnStartMs: Long? = null
         val assembler = GeminiTranscriptAssembler()
         var resumptionHandle: String? = null
         var resumable = false
@@ -640,6 +679,7 @@ internal class GeminiLiveTransport private constructor(
 
     class ConnectionException(message: String) : Exception(message)
     companion object {
+        internal const val INPUT_FINALIZE_DELAY_MS = 1_200L
         private val CONTROL = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "mural-gemini-control").apply { isDaemon = true } }.asCoroutineDispatcher()
         private const val MAX_SEND_QUEUE_BYTES = 65_536L
         private fun digest(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))

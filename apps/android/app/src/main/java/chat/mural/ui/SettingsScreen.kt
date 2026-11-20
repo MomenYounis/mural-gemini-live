@@ -80,6 +80,7 @@ import chat.mural.core.Speaker
 import chat.mural.core.UsageSummary
 import chat.mural.core.ProviderFailureKind
 import chat.mural.network.GeminiLiveProtocol
+import chat.mural.network.GroqWhisperModel
 import chat.mural.network.TeachingModelOption
 import chat.mural.network.TeachingProvider
 import java.util.Locale
@@ -103,6 +104,8 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
     var teachingKeyDialogProvider by remember { mutableStateOf<TeachingProvider?>(null) }
     var deleteTeachingKeyProvider by remember { mutableStateOf<TeachingProvider?>(null) }
     var showTeachingModelPicker by remember { mutableStateOf(false) }
+    var groqKeyDialog by rememberSaveable { mutableStateOf(false) }
+    var deleteGroqKey by rememberSaveable { mutableStateOf(false) }
     var sourceDialog by rememberSaveable { mutableStateOf(false) }
     var pendingSource by rememberSaveable { mutableStateOf<chat.mural.core.ConversationProvider?>(null) }
     var memoryEditDialog by remember { mutableStateOf<MemoryEditRequest?>(null) }
@@ -435,6 +438,101 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                         onClick = { deleteTeachingKeyProvider = activeProvider },
                                     )
                                 }
+                            }
+                        }
+                    }
+                    item {
+                        SettingsGroup(
+                            title = "Speech-to-Text (Groq Whisper)",
+                            footer = "Free Groq tier requires no credit card. Live voice stays on Gemini Live while Groq Whisper refines your spoken transcripts for better reports, flashcards, and memory. Raw audio stays in memory only and is never saved to disk.",
+                        ) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .testTag("settings-groq-stt-switch")
+                                    .toggleable(
+                                        value = vm.groqSttEnabled && vm.hasGroqKey,
+                                        enabled = !vm.isRunning,
+                                        role = Role.Switch,
+                                        onValueChange = { turnOn ->
+                                            if (turnOn && !vm.hasGroqKey) {
+                                                groqKeyDialog = true
+                                            } else {
+                                                vm.updateGroqSttEnabled(turnOn)
+                                            }
+                                        },
+                                    )
+                                    .heightIn(min = 52.dp)
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "Accurate Transcripts (Groq Whisper)",
+                                    Modifier.weight(1f),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = if (!vm.isRunning) MuralColors.Ink else MuralColors.Secondary.copy(alpha = .55f),
+                                )
+                                Switch(
+                                    checked = vm.groqSttEnabled && vm.hasGroqKey,
+                                    onCheckedChange = null,
+                                    enabled = !vm.isRunning,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = MuralColors.Secondary,
+                                        uncheckedThumbColor = Color.White,
+                                        uncheckedTrackColor = MuralColors.Secondary.copy(alpha = .18f),
+                                        uncheckedBorderColor = Color.Transparent,
+                                    ),
+                                )
+                            }
+                            if (vm.groqAuthError && vm.hasGroqKey) {
+                                SettingsDivider()
+                                Text(
+                                    "Groq API key was not accepted (401). Gemini transcripts remain active — replace your key below.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MuralColors.Red,
+                                    modifier = Modifier
+                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                        .testTag("settings-groq-auth-error"),
+                                )
+                            }
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Whisper Model",
+                                value = vm.groqSttModel.shortName,
+                                selected = vm.groqSttModel.id,
+                                options = GroqWhisperModel.entries.map { it.id to it.displayName },
+                                tag = "settings-groq-model",
+                                enabled = !vm.isRunning,
+                                onSelect = { vm.selectGroqSttModel(GroqWhisperModel.fromId(it)) },
+                            )
+                            SettingsDivider()
+                            SettingsRow(
+                                title = "Groq API Key",
+                                value = if (vm.hasGroqKey) "Saved" else "Optional",
+                                symbol = SettingsSymbol.KEY,
+                                chevron = true,
+                                enabled = !vm.isRunning,
+                                modifier = Modifier.testTag("settings-groq-api-key"),
+                                onClick = { groqKeyDialog = true },
+                            )
+                            SettingsDivider()
+                            SettingsRow(
+                                title = "Get Free Groq API Key",
+                                chevron = true,
+                                enabled = !vm.isRunning,
+                                modifier = Modifier.testTag("settings-groq-get-key"),
+                                onClick = { open("https://console.groq.com/keys") },
+                            )
+                            if (vm.hasGroqKey) {
+                                SettingsDivider()
+                                SettingsRow(
+                                    title = "Remove Groq Key",
+                                    tint = MuralColors.Red,
+                                    enabled = !vm.isRunning,
+                                    modifier = Modifier.testTag("settings-groq-remove-key"),
+                                    onClick = { deleteGroqKey = true },
+                                )
                             }
                         }
                     }
@@ -869,6 +967,27 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
             onDismiss = { showTeachingModelPicker = false },
         )
     }
+    if (groqKeyDialog) {
+        GroqKeyDialog(
+            onSave = { rawKey ->
+                vm.saveGroqKey(rawKey)
+                groqKeyDialog = false
+            },
+            onDismiss = { groqKeyDialog = false },
+        )
+    }
+    if (deleteGroqKey) {
+        ConfirmDialog(
+            title = "Remove Groq Key",
+            message = "Remove your saved Groq API key from this device?",
+            confirm = stringResource(R.string.common_delete),
+            onConfirm = {
+                vm.deleteGroqKey()
+                deleteGroqKey = false
+            },
+            onDismiss = { deleteGroqKey = false },
+        )
+    }
     memoryEditDialog?.let { req ->
         MemoryEditDialog(
             request = req,
@@ -1128,6 +1247,49 @@ private fun TeachingKeyDialog(
                         onClick = { onSave(key.trim()); key = "" },
                         enabled = key.trim().length >= 20,
                         modifier = Modifier.testTag("save-teaching-api-key"),
+                    ) { Text(stringResource(R.string.common_save)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GroqKeyDialog(
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var key by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = { key = ""; onDismiss() }) {
+        val view = LocalView.current
+        DisposableEffect(view) {
+            val window = (view.parent as? DialogWindowProvider)?.window
+            val wasSecure = window?.attributes?.flags?.and(WindowManager.LayoutParams.FLAG_SECURE)?.let { it != 0 } ?: false
+            window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            onDispose { if (!wasSecure) window?.clearFlags(WindowManager.LayoutParams.FLAG_SECURE) }
+        }
+        Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Surface) {
+            Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+                Text("Groq API Key", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Your Groq key is encrypted in Android Keystore and never included in backups. Spoken audio stays in memory only while refining your transcripts.",
+                    color = MuralColors.Secondary,
+                )
+                MuralTextField(
+                    key,
+                    { key = it.take(500) },
+                    Modifier.fillMaxWidth().testTag("groq-api-key-input").semantics { password() },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                    label = { Text("Groq API Key") },
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    MuralTextButton(onClick = { key = ""; onDismiss() }) { Text(stringResource(R.string.common_cancel)) }
+                    Button(
+                        onClick = { onSave(key.trim()); key = "" },
+                        enabled = key.trim().length >= 20,
+                        modifier = Modifier.testTag("save-groq-api-key"),
                     ) { Text(stringResource(R.string.common_save)) }
                 }
             }

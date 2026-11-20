@@ -242,10 +242,61 @@ class GeminiLiveTransportTest {
         h.socket.receive("""{"serverContent":{"turnComplete":true,"interactionStatus":"IDLE"}}""")
         h.socket.receive("""{"serverContent":{"inputTranscription":{"text":"أنا goed yesterday"}}}""")
         runCurrent(); advanceTimeBy(750); runCurrent()
+        assertTrue(h.events.filterIsInstance<LiveEvent.Transcript>().all { it.interim })
+        advanceTimeBy(450); runCurrent()
         val input = h.events.filterIsInstance<LiveEvent.Transcript>().last { it.speaker == Speaker.user }
         assertEquals("أنا goed yesterday", input.text)
         assertFalse(input.interim)
         assertTrue(input.estimatedTiming)
+        assertTrue(h.events.filterIsInstance<LiveEvent.UserTurnAudio>().isEmpty())
+        h.stop()
+    }
+
+    @Test fun userTurnAudioIsCapturedAndEmittedOnlyWhenEnabledForAllFinalizationPaths() = runTest {
+        val h = Harness(this)
+        h.ready(captureUserTurnAudio = true)
+
+        // Path 1: Explicit finished=true with provider alignment
+        val pcmTurn1 = ByteArray(640) { 0x2A }
+        h.audio.inputMilliseconds = 500L
+        h.audio.input(pcmTurn1)
+        h.audio.inputMilliseconds = 1_000L
+        h.audio.input(pcmTurn1)
+        h.socket.receive("""{"serverContent":{"inputTranscription":{"text":"Hello there.","finished":true,"startOffset":"0.5s","endOffset":"1.0s"}}}""")
+        runCurrent()
+        val finishedTranscript = h.events.filterIsInstance<LiveEvent.Transcript>().single { !it.interim && it.speaker == Speaker.user }
+        val audio1 = h.events.filterIsInstance<LiveEvent.UserTurnAudio>().single { it.fragmentId == finishedTranscript.id }
+        assertTrue(audio1.pcm16.isNotEmpty())
+        assertTrue(audio1.pcm16.any { it == 0x2A.toByte() })
+
+        // Path 2: Non-finished input finalized after 1_200ms idle delay
+        val pcmTurn2 = ByteArray(640) { 0x3B }
+        h.audio.inputMilliseconds = 2_000L
+        h.socket.receive("""{"voiceActivity":{"type":"ACTIVITY_START","audioOffset":"2.0s"}}""")
+        h.audio.input(pcmTurn2)
+        h.audio.inputMilliseconds = 2_600L
+        h.audio.input(pcmTurn2)
+        h.socket.receive("""{"serverContent":{"inputTranscription":{"text":"Second turn"}}}""")
+        runCurrent(); advanceTimeBy(1_200); runCurrent()
+        val timerTranscript = h.events.filterIsInstance<LiveEvent.Transcript>().last { !it.interim && it.speaker == Speaker.user }
+        val audio2 = h.events.filterIsInstance<LiveEvent.UserTurnAudio>().single { it.fragmentId == timerTranscript.id }
+        assertTrue(audio2.pcm16.any { it == 0x3B.toByte() })
+
+        // Path 3: Finalized when assistant starts speaking (Message.Audio)
+        val pcmTurn3 = ByteArray(640) { 0x4C }
+        h.audio.inputMilliseconds = 4_000L
+        h.audio.input(pcmTurn3)
+        h.socket.receive("""{"serverContent":{"inputTranscription":{"text":"Third turn"}}}""")
+        h.socket.receive(AUDIO)
+        runCurrent()
+        val audioBoundaryTranscript = h.events.filterIsInstance<LiveEvent.Transcript>().last { !it.interim && it.speaker == Speaker.user }
+        val audio3 = h.events.filterIsInstance<LiveEvent.UserTurnAudio>().single { it.fragmentId == audioBoundaryTranscript.id }
+        assertTrue(audio3.pcm16.any { it == 0x4C.toByte() })
+
+        assertTrue(h.transport.activeTurnAudioBufferedBytes > 0)
+        h.transport.close()
+        assertEquals(0, h.transport.activeTurnAudioBufferedBytes)
+        runCurrent()
         h.stop()
     }
 
@@ -478,8 +529,8 @@ class GeminiLiveTransportTest {
             it.onEvent = events::add; it.onFailure = failures::add
         }
         val socket get() = sockets.values.last()
-        suspend fun ready(history: JsonArray = JsonArray(emptyList())) {
-            val connecting = scope.async { transport.connect({ key }, "Policy", history) }
+        suspend fun ready(history: JsonArray = JsonArray(emptyList()), captureUserTurnAudio: Boolean = false) {
+            val connecting = scope.async { transport.connect({ key }, "Policy", history, captureUserTurnAudio = captureUserTurnAudio) }
             scope.runCurrent(); socket.open(); scope.runCurrent(); socket.receive(SETUP); scope.runCurrent(); connecting.await()
         }
         suspend fun stop() { transport.disconnect(); transport.awaitDisconnected(); scope.runCurrent() }

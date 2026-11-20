@@ -135,6 +135,14 @@ class CredentialStore internal constructor(
                 AIVendor.GEMINI,
             )
         }
+        fun forGroqStt(context: Context): CredentialStore = CredentialStore(
+            context,
+            "mural_groq_stt_credentials",
+            "chat.mural.groq.aes",
+            AIVendor.GEMINI,
+        )
+        internal fun validGroqCredential(value: String): Boolean =
+            validCredential(AIVendor.GEMINI, value)
         internal fun validCredential(vendor: AIVendor, value: String): Boolean =
             when (vendor) {
                 AIVendor.OPENAI -> value.startsWith("sk-") && value.length >= 20 && value.none(Char::isWhitespace)

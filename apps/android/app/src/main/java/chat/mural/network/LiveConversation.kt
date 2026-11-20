@@ -20,6 +20,12 @@ sealed interface LiveEvent {
     data object Ready : LiveEvent
     data class Transcript(val id: String, val speaker: Speaker, val text: String, val startMS: Int,
         val endMS: Int, val interim: Boolean = false, val estimatedTiming: Boolean = true) : LiveEvent
+    data class UserTurnAudio(val fragmentId: String, val pcm16: ByteArray) : LiveEvent {
+        override fun equals(other: Any?): Boolean =
+            this === other || (other is UserTurnAudio && fragmentId == other.fragmentId && pcm16.contentEquals(other.pcm16))
+        override fun hashCode(): Int = 31 * fragmentId.hashCode() + pcm16.contentHashCode()
+        override fun toString(): String = "UserTurnAudio(fragmentId=$fragmentId, bytes=${pcm16.size})"
+    }
     data object Interrupted : LiveEvent
     data object GenerationComplete : LiveEvent
     data object PlaybackComplete : LiveEvent
@@ -93,9 +99,9 @@ internal class NativeLiveConversation(context: Context, scope: CoroutineScope, p
         gemini.onLevels = { i, o -> onLevels?.invoke(i, o) }
     }
     suspend fun connect(api: LiveSessionProvider?, vendor: AIVendor, instructions: String,
-        history: JsonArray, language: String?, voice: String? = null) {
+        history: JsonArray, language: String?, voice: String? = null, captureUserTurnAudio: Boolean = false) {
         disconnect(); openai.awaitDisconnected(); gemini.awaitDisconnected(); this.vendor = vendor
-        if (vendor == AIVendor.GEMINI) gemini.connect(geminiCredential, LiveSessionRequest(LiveOffer.NativePCM, instructions, history, language, voice = voice))
+        if (vendor == AIVendor.GEMINI) gemini.connect(geminiCredential, LiveSessionRequest(LiveOffer.NativePCM, instructions, history, language, voice = voice, captureUserTurnAudio = captureUserTurnAudio))
         else openai.connect(requireNotNull(api), instructions, history, language)
     }
     fun send(operation: LiveOperation): Boolean = if (vendor == AIVendor.GEMINI) gemini.send(operation)

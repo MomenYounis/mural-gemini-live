@@ -1,8 +1,10 @@
 package chat.mural
 
 import android.app.Application
+import android.os.SystemClock
 import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
@@ -122,6 +124,131 @@ internal fun prepareImportedArchive(data: String, importedAt: Double = nowSecond
         }
     }
 
+/** Tracks active call duration against a monotonic clock so tab switches and reconnections never reset it. */
+internal class CallDurationTracker(
+    private val clockMillis: () -> Long = SystemClock::elapsedRealtime,
+) {
+    var activeCallStartedAtMillis: Long? = null
+        private set
+    private var maxElapsedSeconds: Long = 0L
+
+    fun startIfNeeded(): Long {
+        if (activeCallStartedAtMillis == null) {
+            activeCallStartedAtMillis = clockMillis()
+            maxElapsedSeconds = 0L
+        }
+        return elapsedSeconds()
+    }
+
+    fun elapsedSeconds(): Long {
+        val startedAt = activeCallStartedAtMillis ?: return 0L
+        val computed = ((clockMillis() - startedAt) / 1000L).coerceAtLeast(0L)
+        if (computed > maxElapsedSeconds) {
+            maxElapsedSeconds = computed
+        }
+        return maxElapsedSeconds
+    }
+
+    fun reset(): Long {
+        activeCallStartedAtMillis = null
+        maxElapsedSeconds = 0L
+        return 0L
+    }
+}
+
+/** Coordinates per-session background Groq Whisper turn refinements and bounded post-session joins. */
+internal class GroqRefinementCoordinator(
+    private val scope: CoroutineScope,
+    private val transcriber: TurnTranscriber,
+) {
+    private val lock = Any()
+    private val jobsBySession = mutableMapOf<String, MutableSet<Job>>()
+
+    fun submit(
+        sessionID: String,
+        fragmentId: String,
+        pcm16: ByteArray,
+        model: GroqWhisperModel,
+        promptHint: String,
+        onRefined: (sessionID: String, fragmentId: String, refinedText: String) -> Unit,
+        onAuthFailure: () -> Unit = {},
+        onSuccess: () -> Unit = {},
+    ): Boolean {
+        if (!hasSpeechEnergy(pcm16)) return false
+        lateinit var job: Job
+        job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                when (val result = transcriber.transcribe(pcm16, model, promptHint)) {
+                    is GroqTranscriptionResult.Success -> {
+                        onSuccess()
+                        onRefined(sessionID, fragmentId, result.text)
+                    }
+                    is GroqTranscriptionResult.Failure -> {
+                        if (result.kind == GroqTranscriptionResult.FailureKind.UNAUTHORIZED) {
+                            onAuthFailure()
+                        }
+                    }
+                    GroqTranscriptionResult.Discarded -> Unit
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep Gemini Live's transcript silently on unexpected failures.
+            } finally {
+                synchronized(lock) {
+                    jobsBySession[sessionID]?.let { jobs ->
+                        jobs.remove(job)
+                        if (jobs.isEmpty()) jobsBySession.remove(sessionID)
+                    }
+                }
+            }
+        }
+        synchronized(lock) {
+            jobsBySession.getOrPut(sessionID) { mutableSetOf() }.add(job)
+        }
+        job.start()
+        return true
+    }
+
+    fun hasPending(sessionID: String): Boolean = synchronized(lock) {
+        jobsBySession[sessionID]?.any { it.isActive } == true
+    }
+
+    suspend fun awaitSession(
+        sessionID: String,
+        timeoutMillis: Long = POST_SESSION_WAIT_TIMEOUT_MS,
+    ): Boolean {
+        val pending = synchronized(lock) {
+            jobsBySession[sessionID]?.filter { it.isActive }.orEmpty()
+        }
+        if (pending.isEmpty()) return true
+        return withTimeoutOrNull(timeoutMillis) {
+            pending.forEach { it.join() }
+            true
+        } ?: false
+    }
+
+    fun cancelSession(sessionID: String) {
+        val toCancel = synchronized(lock) {
+            jobsBySession.remove(sessionID)?.toList().orEmpty()
+        }
+        toCancel.forEach { it.cancel() }
+    }
+
+    fun cancelAll() {
+        val toCancel = synchronized(lock) {
+            val all = jobsBySession.values.flatten()
+            jobsBySession.clear()
+            all
+        }
+        toCancel.forEach { it.cancel() }
+    }
+
+    companion object {
+        const val POST_SESSION_WAIT_TIMEOUT_MS = 4_000L
+    }
+}
+
 class MuralViewModel(application: Application) : AndroidViewModel(application) {
     // Keep intent, not an Activity-capturing callback, while the learner reviews consent.
     var pendingCloudAction: CloudAction? = null
@@ -129,6 +256,23 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     var loadingHistory by mutableStateOf(true); private set
     var session by mutableStateOf<SessionRecord?>(null); private set
     var state by mutableStateOf("idle"); private set
+    private val callDurationTracker = CallDurationTracker(SystemClock::elapsedRealtime)
+    internal val activeCallStartedAtMillis: Long?
+        get() = callDurationTracker.activeCallStartedAtMillis
+    var callElapsedSeconds by mutableLongStateOf(0L)
+        private set
+
+    private fun startCallTimerIfNeeded() {
+        callElapsedSeconds = callDurationTracker.startIfNeeded()
+    }
+
+    private fun refreshCallElapsedSeconds() {
+        callElapsedSeconds = callDurationTracker.elapsedSeconds()
+    }
+
+    private fun resetCallTimer() {
+        callElapsedSeconds = callDurationTracker.reset()
+    }
     var targetCaptionFollowing by mutableStateOf(CaptionFollowing())
     var meaningCaptionFollowing by mutableStateOf(CaptionFollowing())
     var error by mutableStateOf<String?>(null); private set
@@ -204,12 +348,21 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val geminiCredentials = CredentialStore.forVendor(application, AIVendor.GEMINI)
     private val openRouterCredentials = CredentialStore.forTeachingProvider(application, TeachingProvider.OPENROUTER)
     private val sovereignEgCredentials = CredentialStore.forTeachingProvider(application, TeachingProvider.SOVEREIGN_EG)
+    private val groqCredentials = CredentialStore.forGroqStt(application)
+    private val groqSttSettingsStore = GroqSttSettingsStore(application)
+    private val groqTranscriptionClient = GroqTranscriptionClient(readCredential = groqCredentials::read)
+    private val groqRefinement = GroqRefinementCoordinator(viewModelScope, groqTranscriptionClient)
+    private val postSessionSyncJobs = mutableMapOf<String, Job>()
     private val teachingProviderStore = TeachingProviderStore(application)
     var teachingProvider by mutableStateOf(teachingProviderStore.readProvider()); private set
     var openRouterModel by mutableStateOf(teachingProviderStore.readModel(TeachingProvider.OPENROUTER)); private set
     var sovereignEgModel by mutableStateOf(teachingProviderStore.readModel(TeachingProvider.SOVEREIGN_EG)); private set
     var hasOpenRouterKey by mutableStateOf(false); private set
     var hasSovereignEgKey by mutableStateOf(false); private set
+    var hasGroqKey by mutableStateOf(false); private set
+    var groqSttEnabled by mutableStateOf(false); private set
+    var groqSttModel by mutableStateOf(groqSttSettingsStore.readModel()); private set
+    var groqAuthError by mutableStateOf(false); private set
     var availableTeachingModels by mutableStateOf<List<TeachingModelOption>>(
         OpenAICompatibleTeachingClient.presetModelsFor(teachingProvider)
     ); private set
@@ -448,6 +601,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 hasKey = withContext(Dispatchers.IO) { credentialFor(aiVendor).hasKey }
                 hasOpenRouterKey = withContext(Dispatchers.IO) { openRouterCredentials.hasKey }
                 hasSovereignEgKey = withContext(Dispatchers.IO) { sovereignEgCredentials.hasKey }
+                hasGroqKey = withContext(Dispatchers.IO) { groqCredentials.hasKey }
+                groqSttEnabled = if (hasGroqKey) groqSttSettingsStore.readEnabled(hasKey = true) else false
+                groqSttModel = groqSttSettingsStore.readModel()
                 storageReady = true
                 if (teachingProvider != TeachingProvider.DEFAULT_GEMINI) {
                     refreshTeachingModels(teachingProvider)
@@ -939,6 +1095,56 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateGroqSttEnabled(enabled: Boolean) {
+        if (isRunning) return
+        val next = enabled && hasGroqKey
+        groqSttEnabled = next
+        groqSttSettingsStore.saveEnabled(next)
+        if (!next) groqAuthError = false
+    }
+
+    fun selectGroqSttModel(model: GroqWhisperModel) {
+        if (isRunning) return
+        groqSttModel = model
+        groqSttSettingsStore.saveModel(model)
+    }
+
+    fun saveGroqKey(rawKey: String) {
+        if (isRunning) return
+        try {
+            groqCredentials.save(rawKey)
+            hasGroqKey = groqCredentials.hasKey
+            groqAuthError = false
+            if (hasGroqKey) {
+                groqSttEnabled = true
+                groqSttSettingsStore.saveEnabled(true)
+            }
+            error = null
+            notice = getApplication<Application>().getString(R.string.notice_key_saved)
+        } catch (e: Exception) {
+            presentError(e, R.string.error_key_save_failed)
+        }
+    }
+
+    fun deleteGroqKey() {
+        if (isRunning) return
+        try {
+            groqRefinement.cancelAll()
+            groqCredentials.delete()
+            hasGroqKey = false
+            groqSttEnabled = false
+            groqAuthError = false
+            groqSttSettingsStore.saveEnabled(false)
+        } catch (e: Exception) {
+            presentError(e, R.string.error_key_delete_failed)
+        } finally {
+            hasGroqKey = groqCredentials.hasKey
+            if (!hasGroqKey) {
+                groqSttEnabled = false
+            }
+        }
+    }
+
     fun refreshTeachingModels(provider: TeachingProvider = teachingProvider) {
         if (provider == TeachingProvider.DEFAULT_GEMINI) {
             availableTeachingModels = OpenAICompatibleTeachingClient.presetModelsFor(provider)
@@ -1091,6 +1297,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         if (preferences.aiConsentVersion != AI_CONSENT_VERSION) {
             cancelLearningReviews(); hostedBindings.disableHelpers()
             hostedFinalAssessmentJobs.values.toList().forEach { it.cancel() }; hostedFinalAssessmentJobs.clear()
+            groqRefinement.cancelAll()
+            postSessionSyncJobs.values.toList().forEach { it.cancel() }; postSessionSyncJobs.clear()
         }
         generation++; meanings.reset()
         if (languageChanged) resetConversation()
@@ -1156,6 +1364,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private fun newSession(voice: Boolean, id: String = UUID.randomUUID().toString()) {
         generation++; resetJob?.cancel(); assessmentJob?.cancel(); manualReviewJob?.cancel(); actionJob?.cancel(); clearLookup(); working = false; meanings.reset()
         dismissError(); notice = null; isMuted = false
+        resetCallTimer()
         voiceSession = voice
         val record = SessionRecord(id = id, languageID = language.id, themeID = selectedTheme?.id, title = selectedTheme?.title ?: language.defaultTitle)
         topicResult?.takeIf { it.languageID == language.id && selectedTheme?.id == "current" }?.let { record.topics += it }
@@ -1255,8 +1464,21 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
+                val captureGroqAudio = choice == ConversationProvider.PERSONAL_KEY &&
+                    vendor == AIVendor.GEMINI &&
+                    groqSttEnabled &&
+                    hasGroqKey &&
+                    archive.preferences.aiConsentVersion == AI_CONSENT_VERSION
                 liveInputTokens = 0; liveOutputTokens = 0; liveStartedAt = System.nanoTime()
-                transport.connect(provider, vendor, instructions, history, module.locale, voice = activeGeminiVoice)
+                transport.connect(
+                    api = provider,
+                    vendor = vendor,
+                    instructions = instructions,
+                    history = history,
+                    language = module.locale,
+                    voice = activeGeminiVoice,
+                    captureUserTurnAudio = captureGroqAudio,
+                )
             } catch (cancelled: CancellationException) {
                 if (choice == ConversationProvider.HOSTED_MINUTES) reconcileHostedSessions()
                 throw cancelled
@@ -1284,9 +1506,13 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         generation++; actionJob?.cancel(); clearLookup(); meanings.reset(); working = false
         if (isRunning) { updateSession { it.endReason = "App moved to background" }; finish(false) }
     }
-    fun foreground() { inForeground = true }
+    fun foreground() {
+        inForeground = true
+        if (state == "active") refreshCallElapsedSeconds()
+    }
     private fun finish(final: Boolean) {
         if (!isRunning) return
+        resetCallTimer()
         if (ConversationContinuationPolicy.reachedFreeBoundary(freeBoundaryOwnerID != null,
                 session?.endReason, session?.id?.let(hostedBindings::reachedDeadline) == true)) {
             updateSession { it.endReason = "Reserved conversation time ended" }
@@ -1335,11 +1561,41 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             if (it.id in hostedSessionIDs) {
                 hostedBindings.ended(it.id); reconcileHostedSessions(); finishHostedAssessment(clone(it))
             } else {
-                submitFinalReview(clone(it))
-                if (it.passages.any { p -> p.speaker == Speaker.user && p.text.isNotBlank() }) {
-                    val endedSnapshot = clone(it)
-                    analyzeSessionTranscript(endedSnapshot, openWhenReady = true)
-                    updateLearnerMemoryFromSession(endedSnapshot)
+                val sessionID = it.id
+                val runPostSession = {
+                    val fresh = (archive.sessions.firstOrNull { s -> s.id == sessionID }
+                        ?: session?.takeIf { s -> s.id == sessionID })?.let(::clone)
+                    if (fresh != null) {
+                        submitFinalReview(fresh)
+                        if (fresh.passages.any { p -> p.speaker == Speaker.user && p.text.isNotBlank() }) {
+                            analyzeSessionTranscript(fresh, openWhenReady = true)
+                            updateLearnerMemoryFromSession(fresh)
+                        }
+                    }
+                }
+                if (groqRefinement.hasPending(sessionID)) {
+                    val canAnalyzeReport = it.passages.any { p -> p.speaker == Speaker.user && p.text.isNotBlank() } &&
+                        (teachingProvider != TeachingProvider.DEFAULT_GEMINI ||
+                            (storageReady && archive.preferences.aiConsentVersion == AI_CONSENT_VERSION && hasKey))
+                    if (canAnalyzeReport) {
+                        showSessionReport = true
+                        analyzingSessionReport = true
+                        sessionReportError = null
+                    }
+                    postSessionSyncJobs.remove(sessionID)?.cancel()
+                    postSessionSyncJobs[sessionID] = viewModelScope.launch {
+                        try {
+                            groqRefinement.awaitSession(sessionID, GroqRefinementCoordinator.POST_SESSION_WAIT_TIMEOUT_MS)
+                            runPostSession()
+                        } finally {
+                            postSessionSyncJobs.remove(sessionID)
+                            if (postSessionAnalysisJob?.isActive != true) {
+                                analyzingSessionReport = false
+                            }
+                        }
+                    }
+                } else {
+                    runPostSession()
                 }
             }
         }
@@ -1358,6 +1614,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     fun resetConversation() {
         if (isRunning) return
         clearContinuation()
+        resetCallTimer()
         generation++; resetJob?.cancel(); actionJob?.cancel(); clearLookup(); assessmentJob?.cancel(); languageCheckJob?.cancel(); meanings.reset()
         session = null; selectedTheme = null; topicResult = null; activeDeckPracticeTopic = null
         completedTools.clear(); sessionTargetCardIds.clear()
@@ -1381,7 +1638,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             LiveEvent.Ready -> if (state == "connecting") {
                 continuationSession = null; continuationOwnerID = null; hasContinuation = false; continuationReady = false
                 continuationPreferences.edit().remove(continuationKey).apply()
-                state = "active"; liveStartedAt = System.nanoTime(); activity = ConversationActivity(activityNow()); conversationPace = ConversationPace(); inactivitySeconds = null
+                state = "active"; startCallTimerIfNeeded(); liveStartedAt = System.nanoTime(); activity = ConversationActivity(activityNow()); conversationPace = ConversationPace(); inactivitySeconds = null
                 if (conversationProvider == ConversationProvider.PERSONAL_KEY) providerIssue = null
                 if (selectedTheme?.id == "current") topicResult?.let { updateLiveContext("Sourced context, data: ${it.text}", referenceOnly = true) }
                 val deckTargetCards = activeDeckPracticeTopic?.let { topic ->
@@ -1415,6 +1672,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     else activity.assistantActive(activityNow())
                 }
             }
+            is LiveEvent.UserTurnAudio -> handleUserTurnAudio(event)
             is LiveEvent.ToolCall -> delegate(event.id, event.name, event.args)
             is LiveEvent.ToolCancelled -> event.ids.forEach { delegations.remove(it)?.cancel(); completedTools.add(it) }
             is LiveEvent.LegacyUsage -> {
@@ -1443,11 +1701,64 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private fun handleUserTurnAudio(event: LiveEvent.UserTurnAudio) {
+        val current = session ?: return
+        if (current.id in hostedSessionIDs) return
+        if (!storageReady || !groqSttEnabled || !hasGroqKey || archive.preferences.aiConsentVersion != AI_CONSENT_VERSION) return
+        if (vendorFor(current.id) != AIVendor.GEMINI) return
+        val lastAssistantReply = current.passages
+            .lastOrNull { it.speaker == Speaker.assistant && it.text.isNotBlank() }
+            ?.text
+        val topic = selectedTheme?.title?.takeIf { it.isNotBlank() }
+            ?: current.title.takeIf { it.isNotBlank() }
+        val promptHint = GroqTranscriptionClient.buildPromptHint(
+            previousAssistantReply = lastAssistantReply,
+            topic = topic,
+        )
+        groqRefinement.submit(
+            sessionID = current.id,
+            fragmentId = event.fragmentId,
+            pcm16 = event.pcm16,
+            model = groqSttModel,
+            promptHint = promptHint,
+            onRefined = { sessionID, fragmentId, refinedText ->
+                applyGroqRefinement(sessionID, fragmentId, refinedText)
+            },
+            onAuthFailure = {
+                groqAuthError = true
+            },
+            onSuccess = {
+                groqAuthError = false
+            },
+        )
+    }
+
+    private fun applyGroqRefinement(sessionID: String, fragmentId: String, refinedText: String) {
+        val target = archive.sessions.firstOrNull { it.id == sessionID }
+            ?: session?.takeIf { it.id == sessionID }
+            ?: return
+        val clean = refinedText.trim().take(10_000)
+        if (clean.isEmpty()) return
+        val existing = target.fragments.firstOrNull { it.id == fragmentId && it.speaker == Speaker.user } ?: return
+        if (existing.text.trim() == clean) return
+        val updated = clone(target)
+        updated.correctFragment(fragmentId, clean)
+        save(updated)
+        if (session?.id == sessionID) {
+            session = clone(updated)
+        }
+        if (state == "active" && session?.id == sessionID) {
+            scheduleAssessment()
+        }
+    }
     private fun startDurationChecks() {
         durationJob?.cancel()
         durationJob = viewModelScope.launch {
             while (state == "active") {
                 delay(1000)
+                if (state != "active") break
+                refreshCallElapsedSeconds()
                 val current = session ?: break
                 if (current.id in hostedSessionIDs && hostedBindings.reachedDeadline(current.id)) {
                     updateSession { it.endReason = "Reserved conversation time ended" }; finish(false); break
@@ -1659,7 +1970,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             if (conversationProvider == ConversationProvider.HOSTED_MINUTES) {
                 presentError(getApplication<Application>().getString(R.string.hosted_typed_start)); return
             }
-            newSession(false); state = "active"; startDurationChecks()
+            newSession(false); state = "active"; startCallTimerIfNeeded(); startDurationChecks()
         }
         val id = session!!.id; val token = generation
         val offset = if (voiceSession) session!!.nextTypedVoiceOffsetMS
@@ -1793,6 +2104,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         if (activeSessionReport?.sessionID == id) dismissSessionReport()
         finalAssessments.cancel(id); finalReviewIDs = finalReviewIDs - id; manualReviewJob?.cancel()
         hostedFinalAssessmentJobs.remove(id)?.cancel(); hostedBindings.forgetLearning(id)
+        groqRefinement.cancelSession(id)
+        postSessionSyncJobs.remove(id)?.cancel()
         finalAssessmentTickets = finalAssessmentTickets.filterNot { it.sessionID == id }
         sessionReports = sessionReports.filterNot { it.sessionID == id }
         sentenceCards = Sm2Calculator.removeSessionFromCards(sentenceCards, id)
@@ -1945,6 +2258,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         dismissSessionReport()
         learnerMemoryUpdateJob?.cancel(); updatingLearnerMemory = false
         suggestedTopicsRefreshJob?.cancel(); refreshingSuggestedTopics = false
+        groqRefinement.cancelAll()
+        postSessionSyncJobs.values.toList().forEach { it.cancel() }; postSessionSyncJobs.clear()
         cancelLearningReviews(); hostedSessionIDs.forEach(hostedBindings::forgetLearning)
         hostedFinalAssessmentJobs.values.toList().forEach { it.cancel() }; hostedFinalAssessmentJobs.clear(); resetConversation()
         finalAssessmentTickets = emptyList()
@@ -2367,6 +2682,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     override fun onCleared() {
+        groqRefinement.cancelAll()
+        postSessionSyncJobs.values.toList().forEach { it.cancel() }; postSessionSyncJobs.clear()
         if (isRunning) finish(false)
         VoiceConversationService.stop(getApplication(), session?.id)
         hostedBindings.disableHelpers(); transport.disconnect(); super.onCleared()

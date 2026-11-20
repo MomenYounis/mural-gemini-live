@@ -27,4 +27,11 @@ class VendorCredentialValidationTest {
             assertFalse("$vendor must reject malformed credentials", CredentialStore.validCredential(vendor, value))
         }
     }
+
+    @Test fun groqCredentialValidationAcceptsStandardKeysAndRejectsMalformedOnes() {
+        assertTrue(CredentialStore.validGroqCredential("gsk_valid_key_placeholder_12345"))
+        for (value in listOf("", "gsk_short", "gsk_with space_1234567890", "gsk_with\nnewline_123456", "x".repeat(501))) {
+            assertFalse("Groq validation must reject malformed key", CredentialStore.validGroqCredential(value))
+        }
+    }
 }

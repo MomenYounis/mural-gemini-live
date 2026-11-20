@@ -70,9 +70,9 @@ internal object GeminiLiveProtocol {
             put("realtimeInputConfig", buildJsonObject {
                 put("automaticActivityDetection", buildJsonObject {
                     put("disabled", false)
-                    put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
+                    put("startOfSpeechSensitivity", "START_SENSITIVITY_HIGH")
                     put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
-                    put("prefixPaddingMs", 200)
+                    put("prefixPaddingMs", 400)
                     put("silenceDurationMs", 1_200)
                 })
                 put("interimTranscriptTimestampEnabled", true)
