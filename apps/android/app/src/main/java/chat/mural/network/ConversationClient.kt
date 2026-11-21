@@ -1,5 +1,6 @@
 package chat.mural.network
 
+import chat.mural.core.AudioEnvironment
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
@@ -29,7 +30,8 @@ sealed interface LiveOffer {
 
 data class LiveSessionRequest(val offer: LiveOffer, val instructions: String, val history: JsonArray = JsonArray(emptyList()),
     val language: String? = null, val requestID: String = UUID.randomUUID().toString(), val requestedMilliseconds: Long? = null,
-    val voice: String? = null, val captureUserTurnAudio: Boolean = false) {
+    val voice: String? = null, val captureUserTurnAudio: Boolean = false,
+    val audioEnvironment: AudioEnvironment = AudioEnvironment.QUIET, val pushToTalkEnabled: Boolean = false) {
     constructor(sdp: String, instructions: String, history: JsonArray = JsonArray(emptyList()), language: String? = null) :
         this(LiveOffer.WebRTC(sdp), instructions, history, language)
     val sdp: String get() = (offer as? LiveOffer.WebRTC)?.sdp ?: error("This provider requires WebRTC")

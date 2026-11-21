@@ -76,6 +76,8 @@
     <string name="talk_mic_start_desc">Iniciar conversación con micrófono</string>
     <string name="talk_mic_unmute_desc">Activar micrófono</string>
     <string name="talk_mic_mute_desc">Silenciar micrófono</string>
+    <string name="talk_mic_ptt_hold_desc">Mantén el micrófono para hablar</string>
+    <string name="talk_mic_ptt_release_desc">Escuchando, suelta el micrófono para enviar</string>
     <string name="talk_end_label">Terminar</string>
     <string name="talk_transcript_label">Texto</string>
     <string name="talk_type_button">Escribir</string>
@@ -92,6 +94,8 @@
     <string name="talk_status_connecting">Preparando la conversación…</string>
     <string name="talk_status_muted">Micrófono en pausa</string>
     <string name="talk_status_listening">Te escucho</string>
+    <string name="talk_status_ptt_hold">Mantén el micrófono para hablar</string>
+    <string name="talk_status_ptt_listening">Escuchando · suelta para enviar</string>
     <string name="talk_status_closing">Guardando lo aprendido…</string>
     <string name="talk_status_ended">Conversación terminada</string>
     <string name="talk_status_failed">La conversación se interrumpió</string>

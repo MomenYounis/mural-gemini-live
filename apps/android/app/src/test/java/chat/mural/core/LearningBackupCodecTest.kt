@@ -74,6 +74,8 @@ class LearningBackupCodecTest {
         val settings = LearningSettings(
             geminiVoice = "Fenrir",
             coachStyle = CoachStyle.STRICT_COACH,
+            audioEnvironment = AudioEnvironment.NOISY,
+            pushToTalkEnabled = true,
             flashcardAutoPlayOnFlip = true,
             flashcardListeningMode = false,
             dailyGoal = DailyGoalConfig(targetSpeakingMinutes = 10, targetCardsReviewed = 15),
@@ -104,6 +106,8 @@ class LearningBackupCodecTest {
         assertTrue(legacyDecoded.sessionReports.isEmpty())
         assertTrue(legacyDecoded.sentenceCards.isEmpty())
         assertTrue(legacyDecoded.learnerMemories.isEmpty())
+        assertEquals(AudioEnvironment.QUIET, legacyDecoded.learningSettings.audioEnvironment)
+        assertFalse(legacyDecoded.learningSettings.pushToTalkEnabled)
     }
 
     @Test
@@ -149,7 +153,12 @@ class LearningBackupCodecTest {
                     manualLevelOverride = "B2",
                 ),
             ),
-            learningSettings = LearningSettings(geminiVoice = "Aoede", coachStyle = CoachStyle.RELAXED_FRIEND),
+            learningSettings = LearningSettings(
+                geminiVoice = "Aoede",
+                coachStyle = CoachStyle.RELAXED_FRIEND,
+                audioEnvironment = AudioEnvironment.NOISY,
+                pushToTalkEnabled = true,
+            ),
             reviewActivityDays = listOf(DailyActivityRecord("2026-11-18", speakingMinutes = 8, cardsReviewed = 3)),
         )
 
@@ -241,6 +250,8 @@ class LearningBackupCodecTest {
         // Preserves local settings while merging daily activity idempotently
         assertEquals("Aoede", merged.learningSettings.geminiVoice)
         assertEquals(CoachStyle.RELAXED_FRIEND, merged.learningSettings.coachStyle)
+        assertEquals(AudioEnvironment.NOISY, merged.learningSettings.audioEnvironment)
+        assertTrue(merged.learningSettings.pushToTalkEnabled)
         assertEquals(
             listOf(
                 DailyActivityRecord("2026-11-18", speakingMinutes = 12, cardsReviewed = 3),

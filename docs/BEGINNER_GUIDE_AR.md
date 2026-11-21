@@ -129,6 +129,7 @@
 ادخل **`Settings`** (أيقونة الترس فوق على اليمين):
 - **`Memory & English Level`:** شوف وعدّل واحذف أي معلومة التطبيق فاكرها عنك (*About You*, *Interests & Goals*, *Speaking Adaptation & Weaknesses*, *Recent Topics*)، وتحكم في **`Auto-update memory after calls`** أو حدد مستواك يدوي (`Auto` أو من `A1` إلى `C2`).
 - **`AI Voice` و `Coach Style`:** اختار صوتك المفضل من **8 أصوات** (`Kore`, `Puck`, `Aoede`, `Fenrir`, `Charon`, `Leda`, `Orus`, `Zephyr`) وأسلوب المدرب من **4 أساليب** (`Relaxed Friend`, `Balanced Coach`, `Strict Coach`, `Roleplay Immersion`).
+- **`Audio Environment` و `Push-to-Talk`:** من قسم **`Conversation`** اختار **`Quiet Room (Faster Reply)`** لردود أسرع في المكان الهادئ، أو **`Noisy Place (Filter Background)`** لتفعيل فلتر الضوضاء المحلي ومنع كلام المحيطين من مقاطعتك. وتقدر كمان تفعّل **`Push-to-Talk (Hold Mic to Speak)`** علشان المايك يفضل مقفول لحد ما تضغط وتستمر بالضغط على زر الميكروفون البرتقالي، وأول ما تشيل صباعك يبعت كلامك ويرد فوراً.
 - **`Daily Goal & Reminder`:** حدد هدفك اليومي (دقايق كلام + عدد بطاقات) وفعل تذكير يومي هادي (بيبعت إشعار بس لو لسه متمرنتش النهارده وعندك بطاقات مستحقة أو هدف لسه مخلصش).
 - **النسخ الاحتياطي (`Learning backup & data`):** اضغط **`Export learning backup`** من وقت للتاني علشان تحفظ نسخة JSON من كل محادثاتك وبطاقاتك وتقدمك وذاكرتك. *(النسخة الاحتياطية لا تحتوي على مفاتيح الـ API أبداً حفاظاً على أمانك.)*
 
@@ -152,6 +153,7 @@
 ### 4. تفريغ الكلام (Transcript) مش دقيق أو فيه كلمات غريبة
 - اتأكد إن **Groq Whisper** متفعّل من **`Settings → Speech-to-Text (Groq Whisper)`** وإن الموديل على **`Whisper Large v3 (Best Accuracy)`**.
 - لو بتستخدم **سماعة بلوتوث**، جرب تتكلم في **مايك الموبايل نفسه** أو **سماعة سلك** — وضع المكالمات في البلوتوث بيقلل جودة المايك بشكل ملحوظ على أندرويد.
+- لو حواليك دوشة أو ناس بتتكلم، بدّل **`Audio Environment`** إلى **`Noisy Place (Filter Background)`** أو فعّل **`Push-to-Talk (Hold Mic to Speak)`** من **`Settings → Conversation`** علشان الأصوات البعيدة متقاطعش المكالمة.
 - اتكلم في مكان هادي نسبياً بسرعة طبيعية وادي ثانية سكتة لما تخلص جملتك.
 
 ### 5. التطبيق افتكر معلومة غلط عني أو قدّر مستوايا غلط

@@ -2,6 +2,7 @@ package chat.mural.network
 
 import android.content.Context
 import chat.mural.core.AIVendor
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.Speaker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.*
@@ -99,9 +100,10 @@ internal class NativeLiveConversation(context: Context, scope: CoroutineScope, p
         gemini.onLevels = { i, o -> onLevels?.invoke(i, o) }
     }
     suspend fun connect(api: LiveSessionProvider?, vendor: AIVendor, instructions: String,
-        history: JsonArray, language: String?, voice: String? = null, captureUserTurnAudio: Boolean = false) {
+        history: JsonArray, language: String?, voice: String? = null, captureUserTurnAudio: Boolean = false,
+        audioEnvironment: AudioEnvironment = AudioEnvironment.QUIET, pushToTalkEnabled: Boolean = false) {
         disconnect(); openai.awaitDisconnected(); gemini.awaitDisconnected(); this.vendor = vendor
-        if (vendor == AIVendor.GEMINI) gemini.connect(geminiCredential, LiveSessionRequest(LiveOffer.NativePCM, instructions, history, language, voice = voice, captureUserTurnAudio = captureUserTurnAudio))
+        if (vendor == AIVendor.GEMINI) gemini.connect(geminiCredential, LiveSessionRequest(LiveOffer.NativePCM, instructions, history, language, voice = voice, captureUserTurnAudio = captureUserTurnAudio, audioEnvironment = audioEnvironment, pushToTalkEnabled = pushToTalkEnabled))
         else openai.connect(requireNotNull(api), instructions, history, language)
     }
     fun send(operation: LiveOperation): Boolean = if (vendor == AIVendor.GEMINI) gemini.send(operation)

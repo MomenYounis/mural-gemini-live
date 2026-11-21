@@ -1,5 +1,6 @@
 package chat.mural.network
 
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.Speaker
 import java.util.Base64
 import java.util.UUID
@@ -41,7 +42,12 @@ internal object GeminiLiveProtocol {
         return DEFAULT_VOICE
     }
 
-    data class Configuration(val model: String = DEFAULT_MODEL, val voice: String = DEFAULT_VOICE) {
+    data class Configuration(
+        val model: String = DEFAULT_MODEL,
+        val voice: String = DEFAULT_VOICE,
+        val audioEnvironment: AudioEnvironment = AudioEnvironment.QUIET,
+        val pushToTalkEnabled: Boolean = false,
+    ) {
         init {
             require(model.matches(Regex("gemini-[a-zA-Z0-9.-]{1,100}")))
             require(voice.matches(Regex("[A-Za-z]{1,40}")))
@@ -49,6 +55,20 @@ internal object GeminiLiveProtocol {
     }
 
     fun setup(config: Configuration, instructions: String, handle: String? = null, hasHistory: Boolean = false): JsonObject = buildJsonObject {
+        val startSensitivity = when (config.audioEnvironment) {
+            AudioEnvironment.QUIET -> "START_SENSITIVITY_HIGH"
+            AudioEnvironment.NOISY -> "START_SENSITIVITY_LOW"
+        }
+        val endSensitivity = if (config.pushToTalkEnabled || config.audioEnvironment == AudioEnvironment.QUIET) {
+            "END_SENSITIVITY_LOW"
+        } else {
+            "END_SENSITIVITY_HIGH"
+        }
+        val silenceDurationMs = when {
+            config.pushToTalkEnabled -> 1_200
+            config.audioEnvironment == AudioEnvironment.NOISY -> 900
+            else -> 800
+        }
         put("setup", buildJsonObject {
             put("model", "models/${config.model}")
             put("generationConfig", buildJsonObject {
@@ -70,10 +90,10 @@ internal object GeminiLiveProtocol {
             put("realtimeInputConfig", buildJsonObject {
                 put("automaticActivityDetection", buildJsonObject {
                     put("disabled", false)
-                    put("startOfSpeechSensitivity", "START_SENSITIVITY_HIGH")
-                    put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
-                    put("prefixPaddingMs", 400)
-                    put("silenceDurationMs", 1_200)
+                    put("startOfSpeechSensitivity", startSensitivity)
+                    put("endOfSpeechSensitivity", endSensitivity)
+                    put("prefixPaddingMs", 300)
+                    put("silenceDurationMs", silenceDurationMs)
                 })
                 put("interimTranscriptTimestampEnabled", true)
             })

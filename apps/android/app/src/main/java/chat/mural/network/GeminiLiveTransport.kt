@@ -2,6 +2,7 @@ package chat.mural.network
 
 import android.content.Context
 import chat.mural.BuildConfig
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.Speaker
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
@@ -107,25 +108,50 @@ internal class GeminiLiveTransport private constructor(
 
     suspend fun connect(readCredential: () -> String?, request: LiveSessionRequest) {
         require(request.offer == LiveOffer.NativePCM) { "Gemini Live requires native PCM" }
-        connect(readCredential, request.instructions, request.history, request.language, request.voice, request.captureUserTurnAudio)
+        connect(
+            readCredential = readCredential,
+            instructions = request.instructions,
+            history = request.history,
+            language = request.language,
+            voice = request.voice,
+            captureUserTurnAudio = request.captureUserTurnAudio,
+            audioEnvironment = request.audioEnvironment,
+            pushToTalkEnabled = request.pushToTalkEnabled,
+        )
     }
 
     @Suppress("UNUSED_PARAMETER")
-    suspend fun connect(readCredential: () -> String?, instructions: String, history: JsonArray = JsonArray(emptyList()),
-        language: String? = null, voice: String? = null, captureUserTurnAudio: Boolean = false) = withContext(control) {
+    suspend fun connect(
+        readCredential: () -> String?,
+        instructions: String,
+        history: JsonArray = JsonArray(emptyList()),
+        language: String? = null,
+        voice: String? = null,
+        captureUserTurnAudio: Boolean = false,
+        audioEnvironment: AudioEnvironment = configuration.audioEnvironment,
+        pushToTalkEnabled: Boolean = configuration.pushToTalkEnabled,
+    ) = withContext(control) {
         retire()
         val resolvedConfig = GeminiLiveProtocol.Configuration(
             model = configuration.model,
             voice = GeminiLiveProtocol.resolveVoice(voice, configuration.voice),
+            audioEnvironment = audioEnvironment,
+            pushToTalkEnabled = pushToTalkEnabled,
         )
         val attempt = Attempt(generation.incrementAndGet(), readCredential, instructions, history, audioFactory(worker), resolvedConfig, captureUserTurnAudio)
         active = attempt
         try {
             withTimeout(20_000) { open(attempt, resumed = false) }
             requireCurrent(attempt)
+            if (resolvedConfig.pushToTalkEnabled) {
+                attempt.audio.mute(true)
+            }
             attempt.audio.start(onInput = { pcm -> sendAudio(attempt, pcm) }, onFailure = {
                 worker.launch { fail(attempt, "The microphone or communication audio stopped. Check the audio route and try again.") }
-            }, onLevels = { input, output -> callbackScope.launch { if (current(attempt)) onLevels?.invoke(input, output) } })
+            }, onLevels = { input, output ->
+                val effectiveInput = if (attempt.muted || attempt.noiseGate?.isOpen == false) 0.0 else input
+                callbackScope.launch { if (current(attempt)) onLevels?.invoke(effectiveInput, output) }
+            })
             attempt.startedAudio = true
             attempt.scopeCompletion = callbackScope.coroutineContext[Job]?.invokeOnCompletion {
                 worker.launch { if (current(attempt)) retire() }
@@ -197,18 +223,20 @@ internal class GeminiLiveTransport private constructor(
 
     fun mute(muted: Boolean) {
         val attempt = active ?: return
+        val wasMuted = attempt.muted
         attempt.muted = muted
         // Stop microphone submission synchronously, before the queued audioStreamEnd message.
         attempt.audio.mute(muted)
+        if (muted) attempt.noiseGate?.reset()
         worker.launch {
-            if (current(attempt) && muted && attempt.ready && !sendNow(attempt, GeminiLiveProtocol.audioStreamEnd())) networkFailed(attempt, null)
+            if (current(attempt) && muted && !wasMuted && attempt.ready && !sendNow(attempt, GeminiLiveProtocol.audioStreamEnd())) networkFailed(attempt, null)
         }
     }
 
     fun close() {
         val attempt = active ?: return
         if (!attempt.closing.compareAndSet(false, true)) return
-        attempt.ready = false; attempt.audio.mute(true); attempt.turnAudioBuffer?.clear()
+        attempt.ready = false; attempt.audio.mute(true); attempt.noiseGate?.reset(); attempt.turnAudioBuffer?.clear()
         worker.launch {
             if (!current(attempt)) return@launch
             val closingGeneration = retire()
@@ -217,7 +245,7 @@ internal class GeminiLiveTransport private constructor(
     }
 
     fun disconnect() {
-        active?.let { it.closing.set(true); it.ready = false; it.audio.mute(true); it.turnAudioBuffer?.clear() }
+        active?.let { it.closing.set(true); it.ready = false; it.audio.mute(true); it.noiseGate?.reset(); it.turnAudioBuffer?.clear() }
         worker.launch { retire() }
     }
 
@@ -521,6 +549,7 @@ internal class GeminiLiveTransport private constructor(
             fail(attempt, "Gemini disconnected without a usable resumption state. Your local conversation is saved; start a new conversation to continue."); return
         }
         attempt.socketEpoch++ // Reject queued callbacks from the retired socket immediately.
+        attempt.noiseGate?.reset()
         emit(attempt, LiveEvent.Reconnecting)
         interrupt(attempt)
         attempt.inputFinalizer?.cancel()
@@ -557,13 +586,14 @@ internal class GeminiLiveTransport private constructor(
     private fun sendAudio(attempt: Attempt, pcm: ByteArray): Boolean {
         if (!current(attempt) || attempt.closing.get()) return true
         if (!attempt.ready || attempt.muted) return true // Explicit recoverable gap, never replay captured PCM.
-        attempt.turnAudioBuffer?.append(pcm, attempt.audio.inputMilliseconds)
+        val outboundPcm = attempt.noiseGate?.process(pcm) ?: pcm
+        attempt.turnAudioBuffer?.append(outboundPcm, attempt.audio.inputMilliseconds)
         val socket = attempt.socket ?: return true
         if (socket.queueSize() > MAX_SEND_QUEUE_BYTES) {
             worker.launch { fail(attempt, "The network cannot keep up with microphone audio. Check your connection and try again.") }
             return false
         }
-        if (!socket.send(GeminiLiveProtocol.audio(pcm).toString())) {
+        if (!socket.send(GeminiLiveProtocol.audio(outboundPcm).toString())) {
             // A broken network is a transport gap, not an AudioRecord failure. Keep capture
             // alive during bounded resumption and discard uncertain media instead of replaying it.
             worker.launch { networkFailed(attempt, null) }
@@ -631,7 +661,7 @@ internal class GeminiLiveTransport private constructor(
             attempt.scopeCompletion?.dispose(); attempt.goAway?.cancel(); attempt.reconnect?.cancel(); attempt.inputFinalizer?.cancel()
             attempt.toolTimeouts.values.forEach { it.cancel() }; attempt.toolTimeouts.clear(); attempt.pendingTools.clear()
             attempt.setupDone.cancel(); attempt.socket?.close(); attempt.socket?.cancel(); attempt.socket = null
-            attempt.audio.close(); attempt.turnAudioBuffer?.clear(); attempt.activeUserTurnStartMs = null
+            attempt.audio.close(); attempt.noiseGate?.reset(); attempt.turnAudioBuffer?.clear(); attempt.activeUserTurnStartMs = null
             attempt.resumptionHandle = null; attempt.credentialFingerprint?.fill(0); attempt.credentialFingerprint = null
             attempt.history = JsonArray(emptyList())
             attempt.pendingContext = null; attempt.pendingReply = null
@@ -643,7 +673,8 @@ internal class GeminiLiveTransport private constructor(
     private class Attempt(val id: Long, val readCredential: () -> String?, val instructions: String, var history: JsonArray, val audio: GeminiAudio, val configuration: GeminiLiveProtocol.Configuration, captureUserTurnAudio: Boolean = false) {
         val cleaned = AtomicBoolean(); val closing = AtomicBoolean(); val failed = AtomicBoolean()
         @Volatile var ready = false
-        @Volatile var muted = false
+        @Volatile var muted = configuration.pushToTalkEnabled
+        val noiseGate: AudioNoiseGate? = if (configuration.audioEnvironment == AudioEnvironment.NOISY) AudioNoiseGate() else null
         @Volatile var socket: GeminiSocket? = null
         @Volatile var socketEpoch = 0L
         val inbound = Semaphore(256)

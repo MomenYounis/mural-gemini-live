@@ -76,6 +76,8 @@
     <string name="talk_mic_start_desc">Start conversation</string>
     <string name="talk_mic_unmute_desc">Unmute microphone</string>
     <string name="talk_mic_mute_desc">Mute microphone</string>
+    <string name="talk_mic_ptt_hold_desc">Hold microphone to speak</string>
+    <string name="talk_mic_ptt_release_desc">Listening, release microphone to send</string>
     <string name="talk_end_label">End</string>
     <string name="talk_transcript_label">Transcript</string>
     <string name="talk_type_button">Type instead</string>
@@ -92,6 +94,8 @@
     <string name="talk_status_connecting">Getting comfortable…</string>
     <string name="talk_status_muted">Microphone muted</string>
     <string name="talk_status_listening">I\'m listening</string>
+    <string name="talk_status_ptt_hold">Hold mic to speak</string>
+    <string name="talk_status_ptt_listening">Listening · release to send</string>
     <string name="talk_status_closing">Saving our conversation…</string>
     <string name="talk_status_ended">Until next time</string>
     <string name="talk_status_failed">Let\'s try again</string>

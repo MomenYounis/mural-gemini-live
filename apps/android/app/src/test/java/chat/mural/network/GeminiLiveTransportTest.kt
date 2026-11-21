@@ -1,5 +1,6 @@
 package chat.mural.network
 
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.Speaker
 import java.util.Base64
 import kotlinx.coroutines.*
@@ -519,6 +520,147 @@ class GeminiLiveTransportTest {
         h.stop()
     }
 
+    @Test fun pushToTalkStartsMutedSendsPcmWhilePressedAndEmitsAudioStreamEndOnRelease() = runTest {
+        val h = Harness(this)
+        h.ready(pushToTalkEnabled = true)
+
+        val vad = Json.parseToJsonElement(h.socket.sent.first()).jsonObject["setup"]!!
+            .jsonObject["realtimeInputConfig"]!!.jsonObject["automaticActivityDetection"]!!.jsonObject
+        assertEquals(1_200, vad["silenceDurationMs"]!!.jsonPrimitive.int)
+        assertEquals("END_SENSITIVITY_LOW", vad["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+
+        assertTrue(h.audio.muted)
+        assertTrue(h.transport.isMuted)
+        assertFalse(h.socket.sent.any { it.contains("audioStreamEnd") })
+
+        // Redundant mute(true) when already muted does not emit spurious audioStreamEnd.
+        h.transport.mute(true)
+        runCurrent()
+        assertFalse(h.socket.sent.any { it.contains("audioStreamEnd") })
+
+        // Microphone frames arriving while muted are dropped cleanly.
+        val speech = constantPcm16(1_000)
+        h.audio.input(speech)
+        runCurrent()
+        assertFalse(h.socket.sent.any { it.contains("audio/pcm;rate=16000") })
+
+        // Holding mic unmutes and transmits PCM.
+        h.transport.mute(false)
+        runCurrent()
+        assertFalse(h.audio.muted)
+        assertFalse(h.transport.isMuted)
+        h.audio.input(speech)
+        runCurrent()
+        assertTrue(h.socket.sent.last().contains("audio/pcm;rate=16000"))
+
+        // Releasing mic mutes and immediately emits audioStreamEnd once.
+        h.transport.mute(true)
+        runCurrent()
+        assertTrue(h.audio.muted)
+        assertTrue(h.transport.isMuted)
+        assertEquals(1, h.socket.sent.count { it.contains("audioStreamEnd") })
+
+        h.transport.mute(true)
+        runCurrent()
+        assertEquals(1, h.socket.sent.count { it.contains("audioStreamEnd") })
+        h.stop()
+    }
+
+    @Test fun noisyEnvironmentGatesLowRmsAudioAndResetsOnMuteAndReconnect() = runTest {
+        val h = Harness(this)
+        h.ready(captureUserTurnAudio = true, audioEnvironment = AudioEnvironment.NOISY)
+
+        val vad = Json.parseToJsonElement(h.socket.sent.first()).jsonObject["setup"]!!
+            .jsonObject["realtimeInputConfig"]!!.jsonObject["automaticActivityDetection"]!!.jsonObject
+        assertEquals("START_SENSITIVITY_LOW", vad["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_HIGH", vad["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(900, vad["silenceDurationMs"]!!.jsonPrimitive.int)
+
+        // Low-RMS ambient noise stays closed -> zeroed 640-byte silence forwarded to socket and TurnAudioBuffer.
+        val ambient = constantPcm16(200)
+        h.audio.inputMilliseconds = 20L
+        h.audio.input(ambient)
+        runCurrent()
+        assertArrayEquals(ByteArray(640), decodeOutboundAudio(h.socket.sent.last()))
+        assertEquals(640, h.transport.activeTurnAudioBufferedBytes)
+
+        // Loud speech opens the gate and passes speech energy through.
+        val speech = constantPcm16(1_000)
+        h.audio.inputMilliseconds = 40L
+        h.audio.input(speech)
+        runCurrent()
+        val openedPayload = decodeOutboundAudio(h.socket.sent.last())
+        assertTrue(openedPayload.any { it != 0.toByte() })
+
+        // Mid-band signal stays open due to hysteresis.
+        val midBand = constantPcm16(500)
+        h.audio.inputMilliseconds = 60L
+        h.audio.input(midBand)
+        runCurrent()
+        assertArrayEquals(midBand, decodeOutboundAudio(h.socket.sent.last()))
+
+        // Muting resets the gate so mid-band noise stays closed after unmuting.
+        h.transport.mute(true)
+        runCurrent()
+        h.transport.mute(false)
+        runCurrent()
+        h.audio.inputMilliseconds = 80L
+        h.audio.input(midBand)
+        runCurrent()
+        assertArrayEquals(ByteArray(640), decodeOutboundAudio(h.socket.sent.last()))
+
+        // Reconnect / resumption also resets an open gate cleanly.
+        h.audio.inputMilliseconds = 100L
+        h.audio.input(speech)
+        runCurrent()
+        assertTrue(decodeOutboundAudio(h.socket.sent.last()).any { it != 0.toByte() })
+
+        h.socket.receive(RESUMABLE)
+        runCurrent()
+        h.socket.listener.failed()
+        runCurrent()
+        advanceTimeBy(250)
+        runCurrent()
+        h.socket.open()
+        runCurrent()
+        h.socket.receive(SETUP)
+        runCurrent()
+
+        h.audio.inputMilliseconds = 120L
+        h.audio.input(midBand)
+        runCurrent()
+        assertArrayEquals(ByteArray(640), decodeOutboundAudio(h.socket.sent.last()))
+        h.stop()
+    }
+
+    @Test fun quietEnvironmentPassesLowRmsAudioBitForBitUntouched() = runTest {
+        val h = Harness(this)
+        h.ready(audioEnvironment = AudioEnvironment.QUIET)
+
+        val lowLevel = constantPcm16(200)
+        h.audio.input(lowLevel)
+        runCurrent()
+        assertArrayEquals(lowLevel, decodeOutboundAudio(h.socket.sent.last()))
+        h.stop()
+    }
+
+    private fun constantPcm16(sampleValue: Short, sampleCount: Int = 320): ByteArray {
+        val bytes = ByteArray(sampleCount * 2)
+        val lo = (sampleValue.toInt() and 0xFF).toByte()
+        val hi = ((sampleValue.toInt() shr 8) and 0xFF).toByte()
+        for (i in 0 until sampleCount) {
+            bytes[i * 2] = lo
+            bytes[i * 2 + 1] = hi
+        }
+        return bytes
+    }
+
+    private fun decodeOutboundAudio(sentFrame: String): ByteArray {
+        val data = Json.parseToJsonElement(sentFrame).jsonObject["realtimeInput"]!!
+            .jsonObject["audio"]!!.jsonObject["data"]!!.jsonPrimitive.content
+        return Base64.getDecoder().decode(data)
+    }
+
     private class Harness(val scope: TestScope) {
         val sockets = FakeSockets()
         val audio = FakeAudio()
@@ -529,8 +671,22 @@ class GeminiLiveTransportTest {
             it.onEvent = events::add; it.onFailure = failures::add
         }
         val socket get() = sockets.values.last()
-        suspend fun ready(history: JsonArray = JsonArray(emptyList()), captureUserTurnAudio: Boolean = false) {
-            val connecting = scope.async { transport.connect({ key }, "Policy", history, captureUserTurnAudio = captureUserTurnAudio) }
+        suspend fun ready(
+            history: JsonArray = JsonArray(emptyList()),
+            captureUserTurnAudio: Boolean = false,
+            audioEnvironment: AudioEnvironment = AudioEnvironment.QUIET,
+            pushToTalkEnabled: Boolean = false,
+        ) {
+            val connecting = scope.async {
+                transport.connect(
+                    readCredential = { key },
+                    instructions = "Policy",
+                    history = history,
+                    captureUserTurnAudio = captureUserTurnAudio,
+                    audioEnvironment = audioEnvironment,
+                    pushToTalkEnabled = pushToTalkEnabled,
+                )
+            }
             scope.runCurrent(); socket.open(); scope.runCurrent(); socket.receive(SETUP); scope.runCurrent(); connecting.await()
         }
         suspend fun stop() { transport.disconnect(); transport.awaitDisconnected(); scope.runCurrent() }

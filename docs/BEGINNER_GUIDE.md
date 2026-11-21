@@ -129,6 +129,7 @@ Right after a call ends (or anytime from **Words → Session Reports**), review 
 Open **Settings** (top-right gear icon):
 - **Memory & English Level:** View, add, edit, or delete what Mural remembers about you (*About You*, *Interests & Goals*, *Speaking Adaptation & Weaknesses*, *Recent Topics*), toggle **Auto-update memory after calls**, or set your CEFR level manually (**Auto**, or `A1`–`C2`).
 - **AI Voice & Coach Style:** Pick from **8 voices** (like `Kore`, `Puck`, `Aoede`, `Fenrir`) and **4 coaching styles** (`Relaxed Friend`, `Balanced Coach`, `Strict Coach`, `Roleplay Immersion`).
+- **Audio Environment & Push-to-Talk:** Under **Conversation**, choose **Quiet Room (Faster Reply)** for quicker responses at home or **Noisy Place (Filter Background)** to enable the on-device RMS noise gate and block distant background chatter. You can also turn on **Push-to-Talk (Hold Mic to Speak)** to keep the mic muted until you hold the orange mic button and send your turn immediately when you release.
 - **Daily Goal & Reminder:** Set your daily speaking target (`5–20 min`), daily card target (`5–20 cards`), and an optional gentle **Daily Reminder** (only fires if you haven't practiced yet and have due cards or an open goal).
 - **Backups (`Learning backup & data`):** Tap **Export learning backup** regularly to save a JSON file of all your flashcards, reports, memory, and transcripts to Google Drive or local storage. *(Backups never include your API keys.)*
 
@@ -152,6 +153,7 @@ Open **Settings** (top-right gear icon):
 ### 4. My speech transcripts look inaccurate or miss words
 - Make sure **Groq Whisper** is enabled in **Settings → Speech-to-Text (Groq Whisper)** with **`Whisper Large v3 (Best Accuracy)`** selected.
 - If you are wearing **Bluetooth earbuds**, switch to the **phone's built-in mic** or **wired earphones** — Bluetooth hands-free mode severely lowers microphone audio quality on Android.
+- In noisy rooms or around other people talking, switch **Audio Environment** to **Noisy Place (Filter Background)** or enable **Push-to-Talk (Hold Mic to Speak)** in **Settings → Conversation** so background voices don't cut in.
 - Speak at a natural pace in a reasonably quiet spot before pausing so Gemini's turn detection doesn't cut in too early.
 
 ### 5. Mural remembered a wrong fact about me or guessed the wrong level

@@ -67,6 +67,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogWindowProvider
 import chat.mural.MuralViewModel
 import chat.mural.R
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.CEFR_LEVELS
 import chat.mural.core.CoachStyle
 import chat.mural.core.LanguageRegistry
@@ -250,6 +251,60 @@ fun SettingsScreen(vm: MuralViewModel, onExport: () -> Unit, onImport: () -> Uni
                                 enabled = !vm.isRunning,
                                 onSelect = { vm.selectCoachStyle(CoachStyle.fromNameOrDefault(it)) },
                             )
+                            SettingsDivider()
+                            SettingsChoiceRow(
+                                title = "Audio Environment",
+                                value = vm.audioEnvironment.displayName,
+                                selected = vm.audioEnvironment.name,
+                                options = AudioEnvironment.entries.map { it.name to it.displayName },
+                                tag = "settings-audio-environment",
+                                enabled = !vm.isRunning,
+                                onSelect = { vm.selectAudioEnvironment(AudioEnvironment.fromNameOrDefault(it)) },
+                            )
+                            SettingsDivider()
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .testTag("settings-push-to-talk-switch")
+                                    .toggleable(
+                                        value = vm.pushToTalkEnabled,
+                                        enabled = !vm.isRunning,
+                                        role = Role.Switch,
+                                        onValueChange = vm::setPushToTalkEnabled,
+                                    )
+                                    .heightIn(min = 52.dp)
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(
+                                        "Push-to-Talk (Hold Mic to Speak)",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = if (!vm.isRunning) MuralColors.Ink else MuralColors.Secondary.copy(alpha = .55f),
+                                    )
+                                    Text(
+                                        "Keeps the mic muted until you hold the orange mic button, blocks nearby voices, and sends your reply immediately on release.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MuralColors.Secondary.copy(alpha = if (!vm.isRunning) 1f else .55f),
+                                    )
+                                }
+                                Switch(
+                                    checked = vm.pushToTalkEnabled,
+                                    onCheckedChange = null,
+                                    enabled = !vm.isRunning,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = MuralColors.Secondary,
+                                        uncheckedThumbColor = Color.White,
+                                        uncheckedTrackColor = MuralColors.Secondary.copy(alpha = .18f),
+                                        uncheckedBorderColor = Color.Transparent,
+                                    ),
+                                )
+                            }
                         }
                     }
                     item {

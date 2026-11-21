@@ -360,4 +360,74 @@ class MuralViewModelTest {
         assertFalse(coordinator.hasPending(session.id))
     }
 
+    @Test fun pushToTalkControllerStartsMutedHandlesPressReleaseTalkBackAndNeverSticks() {
+        val muteCalls = mutableListOf<Boolean>()
+        var engagedCalls = 0
+        val controller = PushToTalkController(
+            onMuteTransport = muteCalls::add,
+            onLearnerEngaged = { engagedCalls++ },
+        )
+
+        // Cannot speak before session is active.
+        assertFalse(controller.setSpeaking(true))
+        assertFalse(controller.toggleMute())
+
+        // Connecting with PTT enabled starts muted.
+        controller.onSessionStarted(voice = true, pushToTalkEnabled = true)
+        assertTrue(controller.isMuted)
+        assertTrue(controller.isPushToTalkSession)
+        assertFalse(controller.setSpeaking(true))
+
+        // Ready syncs mute(true) with transport.
+        controller.onSessionReady(voice = true, pushToTalkEnabled = true)
+        assertTrue(controller.isMuted)
+        assertEquals(listOf(true), muteCalls)
+
+        // Hold to speak unmutes and marks learner engaged.
+        assertTrue(controller.setSpeaking(true))
+        assertFalse(controller.isMuted)
+        assertEquals(listOf(true, false), muteCalls)
+        assertEquals(1, engagedCalls)
+
+        // Duplicate press refreshes engagement without redundant unmute call.
+        assertFalse(controller.setSpeaking(true))
+        assertEquals(2, engagedCalls)
+        assertEquals(listOf(true, false), muteCalls)
+
+        // Release immediately mutes and ignores duplicate releases.
+        assertTrue(controller.setSpeaking(false))
+        assertTrue(controller.isMuted)
+        assertEquals(listOf(true, false, true), muteCalls)
+        assertFalse(controller.setSpeaking(false))
+        assertEquals(listOf(true, false, true), muteCalls)
+
+        // TalkBack / accessibility toggle flips mute state cleanly.
+        assertTrue(controller.toggleMute())
+        assertFalse(controller.isMuted)
+        assertEquals(3, engagedCalls)
+        assertTrue(controller.toggleMute())
+        assertTrue(controller.isMuted)
+
+        // Ending while held forces muted and resets cleanly.
+        assertTrue(controller.setSpeaking(true))
+        assertFalse(controller.isMuted)
+        controller.onEnding()
+        assertTrue(controller.isMuted)
+        assertFalse(controller.setSpeaking(true))
+        controller.onFinishedOrReset()
+        assertFalse(controller.isMuted)
+        assertFalse(controller.isPushToTalkSession)
+
+        // Non-PTT voice session starts unmuted and ignores setSpeaking.
+        muteCalls.clear()
+        controller.onSessionStarted(voice = true, pushToTalkEnabled = false)
+        assertFalse(controller.isMuted)
+        controller.onSessionReady(voice = true, pushToTalkEnabled = false)
+        assertFalse(controller.isMuted)
+        assertTrue(muteCalls.isEmpty())
+        assertFalse(controller.setSpeaking(true))
+        assertTrue(controller.toggleMute())
+        assertTrue(controller.isMuted)
+    }
+
 }

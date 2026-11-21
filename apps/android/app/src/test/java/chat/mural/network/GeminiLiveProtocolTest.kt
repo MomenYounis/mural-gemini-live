@@ -1,5 +1,6 @@
 package chat.mural.network
 
+import chat.mural.core.AudioEnvironment
 import chat.mural.core.Speaker
 import java.util.Base64
 import kotlinx.serialization.json.*
@@ -20,8 +21,8 @@ class GeminiLiveProtocolTest {
         assertFalse(vad["disabled"]!!.jsonPrimitive.boolean)
         assertEquals("START_SENSITIVITY_HIGH", vad["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
         assertEquals("END_SENSITIVITY_LOW", vad["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
-        assertEquals(400, vad["prefixPaddingMs"]!!.jsonPrimitive.int)
-        assertEquals(1_200, vad["silenceDurationMs"]!!.jsonPrimitive.int)
+        assertEquals(300, vad["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(800, vad["silenceDurationMs"]!!.jsonPrimitive.int)
         assertFalse(setup["inputAudioTranscription"]!!.jsonObject.containsKey("wordTimestamp"))
         assertFalse(setup["outputAudioTranscription"]!!.jsonObject.containsKey("wordTimestamp"))
         assertFalse(setup.containsKey("responseModalities"))
@@ -195,5 +196,37 @@ class GeminiLiveProtocolTest {
         val voiceName = customSetup["generationConfig"]!!.jsonObject["speechConfig"]!!.jsonObject["voiceConfig"]!!
             .jsonObject["prebuiltVoiceConfig"]!!.jsonObject["voiceName"]!!.jsonPrimitive.content
         assertEquals("Aoede", voiceName)
+    }
+
+    @Test fun automaticActivityDetectionAdaptsToAudioEnvironmentAndPushToTalk() {
+        fun vadFor(env: AudioEnvironment, ptt: Boolean): JsonObject =
+            GeminiLiveProtocol.setup(
+                GeminiLiveProtocol.Configuration(audioEnvironment = env, pushToTalkEnabled = ptt),
+                "Practise English.",
+            )["setup"]!!.jsonObject["realtimeInputConfig"]!!.jsonObject["automaticActivityDetection"]!!.jsonObject
+
+        val quiet = vadFor(AudioEnvironment.QUIET, ptt = false)
+        assertEquals("START_SENSITIVITY_HIGH", quiet["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_LOW", quiet["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(300, quiet["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(800, quiet["silenceDurationMs"]!!.jsonPrimitive.int)
+
+        val noisy = vadFor(AudioEnvironment.NOISY, ptt = false)
+        assertEquals("START_SENSITIVITY_LOW", noisy["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_HIGH", noisy["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(300, noisy["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(900, noisy["silenceDurationMs"]!!.jsonPrimitive.int)
+
+        val quietPtt = vadFor(AudioEnvironment.QUIET, ptt = true)
+        assertEquals("START_SENSITIVITY_HIGH", quietPtt["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_LOW", quietPtt["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(300, quietPtt["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(1_200, quietPtt["silenceDurationMs"]!!.jsonPrimitive.int)
+
+        val noisyPtt = vadFor(AudioEnvironment.NOISY, ptt = true)
+        assertEquals("START_SENSITIVITY_LOW", noisyPtt["startOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals("END_SENSITIVITY_LOW", noisyPtt["endOfSpeechSensitivity"]!!.jsonPrimitive.content)
+        assertEquals(300, noisyPtt["prefixPaddingMs"]!!.jsonPrimitive.int)
+        assertEquals(1_200, noisyPtt["silenceDurationMs"]!!.jsonPrimitive.int)
     }
 }

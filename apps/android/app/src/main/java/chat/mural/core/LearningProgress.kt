@@ -30,6 +30,8 @@ data class StudyReminderConfig(
 data class LearningSettings(
     val geminiVoice: String = "",
     val coachStyle: CoachStyle = CoachStyle.BALANCED,
+    val audioEnvironment: AudioEnvironment = AudioEnvironment.QUIET,
+    val pushToTalkEnabled: Boolean = false,
     val flashcardAutoPlayOnFlip: Boolean = false,
     val flashcardListeningMode: Boolean = false,
     val dailyGoal: DailyGoalConfig = DailyGoalConfig(),

@@ -11,8 +11,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +44,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,11 +67,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
@@ -161,7 +168,7 @@ fun TalkScreen(
             val status = if (vm.hasContinuation) {
                 stringResource(if (vm.continuationReady) R.string.talk_status_continue_ready
                     else if (vm.continuationNeedsMinutes) R.string.talk_status_continue_saved else R.string.talk_status_continue_settling)
-            } else statusText(vm.state, vm.isMuted, vm.isVoiceSession, vm.inactivitySeconds)
+            } else statusText(vm.state, vm.isMuted, vm.isVoiceSession, vm.inactivitySeconds, vm.pushToTalkEnabled)
             val statusCaption = buildAnnotatedString {
                 if (vm.inactivitySeconds != null) {
                     withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontFeatureSettings = "tnum")) { append(status.substringBefore('\n')) }
@@ -270,22 +277,81 @@ fun TalkScreen(
             RoundAction(MuralSymbol.Captions, stringResource(R.string.talk_meaning_label),
                 selected = vm.archive.preferences.meaningVisible, onClick = vm::toggleMeaning)
             Spacer(Modifier.width(when { scrollPage -> 12.dp; compact -> 20.dp; else -> 27.dp }))
+            val context = LocalContext.current
+            val accessibility = remember(context) { context.getSystemService(android.content.Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager }
+            var touchExploration by remember(accessibility) { mutableStateOf(accessibility.isTouchExplorationEnabled) }
+            DisposableEffect(accessibility) {
+                val listener = android.view.accessibility.AccessibilityManager.TouchExplorationStateChangeListener { touchExploration = it }
+                accessibility.addTouchExplorationStateChangeListener(listener)
+                onDispose { accessibility.removeTouchExplorationStateChangeListener(listener) }
+            }
+            val pttActive = vm.isPushToTalkActive
+            val pttSpeaking = pttActive && !vm.isMuted
+            DisposableEffect(pttActive) {
+                onDispose { vm.setPushToTalkSpeaking(false) }
+            }
+            val micScale by animateFloatAsState(
+                targetValue = if (pttSpeaking) 1.09f else 1f,
+                animationSpec = spring(dampingRatio = 0.75f, stiffness = 420f),
+                label = "push to talk mic scale",
+            )
             val micDescription = stringResource(when {
                 vm.state == "active" && !vm.isVoiceSession -> R.string.talk_status_written
                 vm.state != "active" -> R.string.talk_mic_start_desc
+                pttActive && vm.isMuted -> R.string.talk_mic_ptt_hold_desc
+                pttActive -> R.string.talk_mic_ptt_release_desc
                 vm.isMuted -> R.string.talk_mic_unmute_desc
                 else -> R.string.talk_mic_mute_desc
             })
             val micEnabled = !busy && (vm.state != "active" || vm.isVoiceSession)
+            val micGradient = if (pttSpeaking) {
+                listOf(MuralColors.Orange, Color(0xFFE86A2C))
+            } else {
+                listOf(Color(0xFFFFBA7A), MuralColors.Orange)
+            }
+            val micInteractionModifier = when {
+                pttActive && !touchExploration -> Modifier
+                    .semantics {
+                        contentDescription = micDescription
+                        role = Role.Button
+                        onClick(label = micDescription) {
+                            vm.toggleMute()
+                            true
+                        }
+                    }
+                    .pointerInput(pttActive) {
+                        detectTapGestures(
+                            onPress = {
+                                vm.setPushToTalkSpeaking(true)
+                                try {
+                                    tryAwaitRelease()
+                                } finally {
+                                    vm.setPushToTalkSpeaking(false)
+                                }
+                            },
+                        )
+                    }
+                pttActive -> Modifier
+                    .semantics { contentDescription = micDescription }
+                    .clickable(enabled = micEnabled, role = Role.Button) {
+                        vm.toggleMute()
+                    }
+                else -> Modifier
+                    .semantics { contentDescription = micDescription }
+                    .clickable(enabled = micEnabled, role = Role.Button) {
+                        if (vm.state == "active" && vm.isVoiceSession) vm.toggleMute()
+                        else if (vm.hasContinuation) conversationChoice = true
+                        else onMicrophone()
+                    }
+            }
             Box(Modifier.padding(bottom = if (compact) 15.dp else 19.dp).size(if (compact) 66.dp else 76.dp)
+                .graphicsLayer { scaleX = micScale; scaleY = micScale }
                 .shadow(18.dp, CircleShape, ambientColor = MuralColors.Orange.copy(alpha = .15f), spotColor = MuralColors.Orange.copy(alpha = .25f))
-                .background(Brush.linearGradient(listOf(Color(0xFFFFBA7A), MuralColors.Orange)), CircleShape).clip(CircleShape)
-                .testTag("start-conversation").semantics { contentDescription = micDescription }
-                .clickable(enabled = micEnabled, role = Role.Button) {
-                    if (vm.state == "active" && vm.isVoiceSession) vm.toggleMute()
-                    else if (vm.hasContinuation) conversationChoice = true
-                    else onMicrophone()
-                }, contentAlignment = Alignment.Center) {
+                .background(Brush.linearGradient(micGradient), CircleShape)
+                .then(if (pttSpeaking) Modifier.border(2.dp, Color.White.copy(alpha = 0.75f), CircleShape) else Modifier)
+                .clip(CircleShape)
+                .testTag("start-conversation")
+                .then(micInteractionModifier), contentAlignment = Alignment.Center) {
                 if (busy) CircularProgressIndicator(Modifier.size(25.dp), color = MuralColors.Ink, strokeWidth = 2.dp)
                 else MuralIcon(if (vm.isMuted && vm.state == "active") MuralSymbol.MicOff else MuralSymbol.Mic,
                     modifier = Modifier.size(30.dp))
@@ -462,9 +528,22 @@ internal fun TypedReplySheet(languageName: String, working: Boolean, onSend: (St
 
 
 @Composable
-private fun statusText(state: String, muted: Boolean, voice: Boolean, inactivitySeconds: Int? = null) = when (state) {
+private fun statusText(
+    state: String,
+    muted: Boolean,
+    voice: Boolean,
+    inactivitySeconds: Int? = null,
+    pushToTalk: Boolean = false,
+) = when (state) {
     "connecting" -> stringResource(R.string.talk_status_connecting)
-    "active" -> if (inactivitySeconds != null && voice) stringResource(R.string.talk_inactivity_warning, inactivitySeconds) else if (!voice) stringResource(R.string.talk_status_written) else if (muted) stringResource(R.string.talk_status_muted) else stringResource(R.string.talk_status_listening)
+    "active" -> when {
+        inactivitySeconds != null && voice -> stringResource(R.string.talk_inactivity_warning, inactivitySeconds)
+        !voice -> stringResource(R.string.talk_status_written)
+        pushToTalk && muted -> stringResource(R.string.talk_status_ptt_hold)
+        pushToTalk -> stringResource(R.string.talk_status_ptt_listening)
+        muted -> stringResource(R.string.talk_status_muted)
+        else -> stringResource(R.string.talk_status_listening)
+    }
     "closing" -> stringResource(R.string.talk_status_closing)
     "ended" -> stringResource(R.string.talk_status_ended)
     "failed" -> stringResource(R.string.talk_status_failed)

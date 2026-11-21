@@ -249,6 +249,67 @@ internal class GroqRefinementCoordinator(
     }
 }
 
+/** Coordinates Push-to-Talk mute state across session startup, press/release, TalkBack toggle, and teardown. */
+internal class PushToTalkController(
+    private val onMuteTransport: (Boolean) -> Unit,
+    private val onLearnerEngaged: () -> Unit,
+) {
+    var isMuted: Boolean = false
+        private set
+    var isPushToTalkSession: Boolean = false
+        private set
+    private var sessionActive: Boolean = false
+
+    fun onSessionStarted(voice: Boolean, pushToTalkEnabled: Boolean) {
+        isPushToTalkSession = voice && pushToTalkEnabled
+        sessionActive = false
+        isMuted = isPushToTalkSession
+    }
+
+    fun onSessionReady(voice: Boolean, pushToTalkEnabled: Boolean) {
+        isPushToTalkSession = voice && pushToTalkEnabled
+        sessionActive = voice
+        if (isPushToTalkSession) {
+            isMuted = true
+            onMuteTransport(true)
+        }
+    }
+
+    fun setSpeaking(speaking: Boolean): Boolean {
+        if (!sessionActive || !isPushToTalkSession) return false
+        val targetMuted = !speaking
+        if (isMuted == targetMuted) {
+            if (speaking) onLearnerEngaged()
+            return false
+        }
+        isMuted = targetMuted
+        onMuteTransport(targetMuted)
+        if (speaking) onLearnerEngaged()
+        return true
+    }
+
+    fun toggleMute(): Boolean {
+        if (!sessionActive) return false
+        isMuted = !isMuted
+        onMuteTransport(isMuted)
+        if (isPushToTalkSession && !isMuted) {
+            onLearnerEngaged()
+        }
+        return true
+    }
+
+    fun onEnding() {
+        sessionActive = false
+        isMuted = true
+    }
+
+    fun onFinishedOrReset() {
+        sessionActive = false
+        isPushToTalkSession = false
+        isMuted = false
+    }
+}
+
 class MuralViewModel(application: Application) : AndroidViewModel(application) {
     // Keep intent, not an Activity-capturing callback, while the learner reviews consent.
     var pendingCloudAction: CloudAction? = null
@@ -490,6 +551,12 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         get() = GeminiLiveProtocol.resolveVoice(learningSettings.geminiVoice, BuildConfig.GEMINI_LIVE_VOICE)
     val coachStyle: CoachStyle
         get() = learningSettings.coachStyle
+    val audioEnvironment: AudioEnvironment
+        get() = learningSettings.audioEnvironment
+    val pushToTalkEnabled: Boolean
+        get() = learningSettings.pushToTalkEnabled
+    val isPushToTalkActive: Boolean
+        get() = pushToTalkEnabled && state == "active" && isVoiceSession
     val flashcardAutoPlayOnFlip: Boolean
         get() = learningSettings.flashcardAutoPlayOnFlip
     val flashcardListeningMode: Boolean
@@ -565,6 +632,13 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private var voiceSession = false
     private var inForeground = true
     private var activity = ConversationActivity(activityNow())
+    private val pushToTalk = PushToTalkController(
+        onMuteTransport = transport::mute,
+        onLearnerEngaged = {
+            activity.learnerEngaged(activityNow())
+            inactivitySeconds = null
+        },
+    )
     private var conversationPace = ConversationPace()
     var inactivitySeconds by mutableStateOf<Int?>(null); private set
     private fun activityNow() = System.nanoTime() / 1_000_000_000.0
@@ -1335,7 +1409,18 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         meanings.reset()
         if (archive.preferences.meaningVisible) scheduleTranslation()
     }
-    fun toggleMute() { if (state == "active" && voiceSession) { isMuted = !isMuted; transport.mute(isMuted) } }
+    fun toggleMute() {
+        if (state != "active" || !voiceSession) return
+        if (pushToTalk.toggleMute()) {
+            isMuted = pushToTalk.isMuted
+        }
+    }
+
+    fun setPushToTalkSpeaking(speaking: Boolean) {
+        if (state != "active" || !isVoiceSession || !pushToTalkEnabled) return
+        pushToTalk.setSpeaking(speaking)
+        isMuted = pushToTalk.isMuted
+    }
     fun help() {
         if (state != "active") return
         if (voiceSession) { activity.learnerEngaged(activityNow()); inactivitySeconds = null; conversationPace.askForHelp(session?.passages?.lastOrNull { it.speaker == Speaker.user }); updateLiveContext(conversationPace.instruction); requestReply(TeachingPolicy.help(language)); notice = getApplication<Application>().getString(R.string.notice_help_simpler) }
@@ -1363,7 +1448,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun newSession(voice: Boolean, id: String = UUID.randomUUID().toString()) {
         generation++; resetJob?.cancel(); assessmentJob?.cancel(); manualReviewJob?.cancel(); actionJob?.cancel(); clearLookup(); working = false; meanings.reset()
-        dismissError(); notice = null; isMuted = false
+        dismissError(); notice = null
+        pushToTalk.onSessionStarted(voice, pushToTalkEnabled)
+        isMuted = pushToTalk.isMuted
         resetCallTimer()
         voiceSession = voice
         val record = SessionRecord(id = id, languageID = language.id, themeID = selectedTheme?.id, title = selectedTheme?.title ?: language.defaultTitle)
@@ -1478,6 +1565,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     language = module.locale,
                     voice = activeGeminiVoice,
                     captureUserTurnAudio = captureGroqAudio,
+                    audioEnvironment = audioEnvironment,
+                    pushToTalkEnabled = pushToTalkEnabled,
                 )
             } catch (cancelled: CancellationException) {
                 if (choice == ConversationProvider.HOSTED_MINUTES) reconcileHostedSessions()
@@ -1491,7 +1580,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     fun end(reason: String = "Ended by you") {
         if (state !in listOf("active", "connecting")) return
         val connecting = state == "connecting"
-        state = "closing"; isMuted = true
+        state = "closing"
+        pushToTalk.onEnding()
+        isMuted = pushToTalk.isMuted
         connectionJob?.cancel(); durationJob?.cancel(); assessmentJob?.cancel(); actionJob?.cancel(); clearLookup()
         delegations.values.toList().forEach { it.cancel() }; delegations.clear(); working = false
         updateSession { it.endReason = reason }
@@ -1502,7 +1593,10 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     fun background() {
         inForeground = false
         // Screen state is not learner inactivity. The foreground service owns this call.
-        if (isRunning && voiceSession && VoiceConversationService.holds(session?.id)) return
+        if (isRunning && voiceSession && VoiceConversationService.holds(session?.id)) {
+            if (isPushToTalkActive) setPushToTalkSpeaking(false)
+            return
+        }
         generation++; actionJob?.cancel(); clearLookup(); meanings.reset(); working = false
         if (isRunning) { updateSession { it.endReason = "App moved to background" }; finish(false) }
     }
@@ -1520,7 +1614,9 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         connectionJob?.cancel(); durationJob?.cancel(); closeJob?.cancel(); assessmentJob?.cancel()
         actionJob?.cancel(); clearLookup(); languageCheckJob?.cancel()
         delegations.values.toList().forEach { it.cancel() }; delegations.clear()
-        transport.disconnect(); inputLevel = 0.0; outputLevel = 0.0; working = false; isMuted = false
+        transport.disconnect(); inputLevel = 0.0; outputLevel = 0.0; working = false
+        pushToTalk.onFinishedOrReset()
+        isMuted = pushToTalk.isMuted
         VoiceConversationService.stop(getApplication(), session?.id)
         interimAssistantCaption = null; interimUserCaption = null; providerProcessing = false
         val geminiSession = session?.let { it.id !in hostedSessionIDs && vendorFor(it.id) == AIVendor.GEMINI } == true
@@ -1618,6 +1714,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         generation++; resetJob?.cancel(); actionJob?.cancel(); clearLookup(); assessmentJob?.cancel(); languageCheckJob?.cancel(); meanings.reset()
         session = null; selectedTheme = null; topicResult = null; activeDeckPracticeTopic = null
         completedTools.clear(); sessionTargetCardIds.clear()
+        pushToTalk.onFinishedOrReset()
+        isMuted = pushToTalk.isMuted
         notice = null; working = false; state = "idle"; voiceSession = false
     }
     private fun requestReply(content: String): Boolean = sendLive(LiveOperation.RequestReply(content))
@@ -1639,6 +1737,8 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                 continuationSession = null; continuationOwnerID = null; hasContinuation = false; continuationReady = false
                 continuationPreferences.edit().remove(continuationKey).apply()
                 state = "active"; startCallTimerIfNeeded(); liveStartedAt = System.nanoTime(); activity = ConversationActivity(activityNow()); conversationPace = ConversationPace(); inactivitySeconds = null
+                pushToTalk.onSessionReady(voiceSession, pushToTalkEnabled)
+                isMuted = pushToTalk.isMuted
                 if (conversationProvider == ConversationProvider.PERSONAL_KEY) providerIssue = null
                 if (selectedTheme?.id == "current") topicResult?.let { updateLiveContext("Sourced context, data: ${it.text}", referenceOnly = true) }
                 val deckTargetCards = activeDeckPracticeTopic?.let { topic ->
@@ -2511,6 +2611,18 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     fun selectCoachStyle(style: CoachStyle) {
         if (isRunning || !storageReady) return
         learningSettings = learningSettings.copy(coachStyle = style).sanitized()
+        persist()
+    }
+
+    fun selectAudioEnvironment(environment: AudioEnvironment) {
+        if (isRunning || !storageReady) return
+        learningSettings = learningSettings.copy(audioEnvironment = environment).sanitized()
+        persist()
+    }
+
+    fun setPushToTalkEnabled(enabled: Boolean) {
+        if (isRunning || !storageReady) return
+        learningSettings = learningSettings.copy(pushToTalkEnabled = enabled).sanitized()
         persist()
     }
 
