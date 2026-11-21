@@ -69,7 +69,7 @@ class SettingsDetailsTest {
     @Test fun settingsMatchTheIphoneCorrectionsKeysAndVersionDetails() {
         val activity = compose.activity
         val version = activity.packageManager.getPackageInfo(activity.packageName, 0).versionName
-        assertEquals("0.1", version)
+        assertEquals(BuildConfig.VERSION_NAME, version)
         compose.runOnIdle {
             val vm = ViewModelProvider(activity)[MuralViewModel::class.java]
             vm.selectAIVendor(AIVendor.OPENAI)

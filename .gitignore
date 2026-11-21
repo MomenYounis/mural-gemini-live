@@ -39,6 +39,7 @@ apps/android/.kotlin/
 apps/android/**/build/
 apps/android/local.properties
 apps/android/.idea/
+.signing/
 *.jks
 *.keystore
 *.apk

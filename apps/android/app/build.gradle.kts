@@ -1,3 +1,4 @@
+import java.io.File
 import java.util.Properties
 
 plugins {
@@ -17,7 +18,7 @@ require(muralPurchaseChannel in listOf("play", "stripe")) { "mural.purchaseChann
 val muralMinuteEnvironment = muralConfiguration("mural.minutePurchaseEnvironment").ifBlank { "test" }
 require(muralMinutePurchases in listOf("false", "true")) { "mural.minutePurchasesEnabled must be false or true" }
 require(muralMinuteEnvironment in listOf("test", "live")) { "mural.minutePurchaseEnvironment must be test or live" }
-val muralVersionCode = muralConfiguration("mural.versionCode").ifBlank { "15" }.toIntOrNull()
+val muralVersionCode = muralConfiguration("mural.versionCode").ifBlank { "16" }.toIntOrNull()
 require(muralVersionCode != null && muralVersionCode in 12..2_100_000_000) { "mural.versionCode must be a supported positive Android version code" }
 val geminiLiveModel = muralConfiguration("mural.geminiLiveModel").ifBlank { "gemini-3.8-live" }
 val geminiLiveVoice = muralConfiguration("mural.geminiLiveVoice").ifBlank { "Kore" }
@@ -44,7 +45,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = muralVersionCode
-        versionName = "0.1"
+        versionName = muralConfiguration("mural.versionName").ifBlank { "0.2.0" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GEMINI_LIVE_MODEL", buildString(geminiLiveModel))
         buildConfigField("String", "GEMINI_LIVE_VOICE", buildString(geminiLiveVoice))
@@ -59,8 +60,40 @@ android {
     // This file is ignored by Git; clean checkouts use Android's standard debug key.
     val personalDebugKey = rootProject.file(".signing/debug.keystore")
     if (personalDebugKey.exists()) signingConfigs.getByName("debug").storeFile = personalDebugKey
+    val releaseStoreFilePath = muralConfiguration("mural.releaseStoreFile").trim()
+    val releaseStorePassword = muralConfiguration("mural.releaseStorePassword")
+    val releaseKeyAlias = muralConfiguration("mural.releaseKeyAlias").trim()
+    val releaseKeyPassword = muralConfiguration("mural.releaseKeyPassword")
+    val releaseStoreFile = releaseStoreFilePath
+        .takeIf { it.isNotEmpty() }
+        ?.let { path ->
+            val candidate = File(path)
+            if (candidate.isAbsolute) candidate else rootProject.file(path)
+        }
+    val hasReleaseSigning = releaseStoreFile != null &&
+        releaseStoreFile.isFile &&
+        releaseStorePassword.isNotBlank() &&
+        releaseKeyAlias.isNotEmpty() &&
+        releaseKeyPassword.isNotBlank()
+    if (hasReleaseSigning) {
+        signingConfigs.create("release") {
+            storeFile = releaseStoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
     // Interface tests install as a separate app so they never read or change a learner's data.
     buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            isDebuggable = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
         create("voiceVerification") {
             initWith(getByName("debug"))
             applicationIdSuffix = ".verification"
