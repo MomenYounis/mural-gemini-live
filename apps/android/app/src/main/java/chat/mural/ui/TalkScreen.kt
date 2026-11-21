@@ -106,18 +106,6 @@ fun TalkScreen(
     var lookupWord by rememberSaveable { mutableStateOf("") }
     var lookupSentence by rememberSaveable { mutableStateOf("") }
     var transcript by remember { mutableStateOf<SessionRecord?>(null) }
-    var callElapsedSeconds by rememberSaveable(vm.session?.id) { mutableStateOf(0L) }
-    LaunchedEffect(vm.state, vm.session?.id) {
-        if (vm.state == "active") {
-            val startMs = System.currentTimeMillis() - (callElapsedSeconds * 1000L)
-            while (true) {
-                kotlinx.coroutines.delay(1000L)
-                callElapsedSeconds = ((System.currentTimeMillis() - startMs) / 1000L).coerceAtLeast(callElapsedSeconds + 1L)
-            }
-        } else if (vm.state !in listOf("connecting", "active", "closing")) {
-            callElapsedSeconds = 0L
-        }
-    }
     val assistantPassage = vm.session?.passages?.lastOrNull { it.speaker == Speaker.assistant }
     val passage = vm.interimAssistantCaption ?: assistantPassage?.text
     val caption = passage?.takeIf { it.isNotBlank() } ?: vm.language.greeting
@@ -190,7 +178,7 @@ fun TalkScreen(
                         .testTag("conversation-status"))
                 if (vm.state == "active") {
                     Text(
-                        text = formatCallElapsedTime(callElapsedSeconds),
+                        text = formatCallElapsedTime(vm.callElapsedSeconds),
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontWeight = FontWeight.SemiBold,
                             fontFeatureSettings = "tnum",

@@ -74,6 +74,7 @@ fun MuralApp(
     val accountState = account?.state?.collectAsStateWithLifecycle()?.value
     val prefs = vm.archive.preferences
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    var wordsSection by rememberSaveable { mutableStateOf(WordsSection.TOPIC_DECKS) }
     var showConsent by rememberSaveable { mutableStateOf(false) }
     var showAccount by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -161,6 +162,8 @@ fun MuralApp(
                                         withConsent(CloudAction.StartVoice)
                                     }
                                 },
+                                selectedSection = wordsSection,
+                                onSelectSection = { wordsSection = it },
                             )
                         }
                     }

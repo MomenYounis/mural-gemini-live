@@ -1,5 +1,6 @@
 package chat.mural.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,8 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -45,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -330,12 +334,65 @@ private fun CurrentTopicDialog(
     }
 }
 
+enum class WordsSection {
+    TOPIC_DECKS,
+    SESSION_REPORTS,
+}
+
+internal fun filterTopicDecks(decks: List<TopicDeck>, query: String): List<TopicDeck> {
+    val needle = query.trim()
+    if (needle.isEmpty()) return decks
+    return decks.filter { deck ->
+        deck.topic.contains(needle, ignoreCase = true) ||
+            deck.cards.any { card ->
+                card.frontText.contains(needle, ignoreCase = true) ||
+                    card.backText.contains(needle, ignoreCase = true) ||
+                    card.explanation.contains(needle, ignoreCase = true)
+            }
+    }
+}
+
+internal fun filterSessionReports(reports: List<SessionReport>, query: String): List<SessionReport> {
+    val needle = query.trim()
+    if (needle.isEmpty()) return reports
+    return reports.filter { report ->
+        report.topic.contains(needle, ignoreCase = true) ||
+            report.mistakes.any { mistake ->
+                mistake.userSaid.contains(needle, ignoreCase = true) ||
+                    mistake.correction.contains(needle, ignoreCase = true) ||
+                    mistake.arabicMeaning.contains(needle, ignoreCase = true) ||
+                    mistake.explanation.contains(needle, ignoreCase = true)
+            } ||
+            report.wins.any { win ->
+                win.contains(needle, ignoreCase = true)
+            } ||
+            report.naturalUpgrades.any { upgrade ->
+                upgrade.userSaid.contains(needle, ignoreCase = true) ||
+                    upgrade.naturalAlternative.contains(needle, ignoreCase = true) ||
+                    upgrade.arabicMeaning.contains(needle, ignoreCase = true) ||
+                    upgrade.explanation.contains(needle, ignoreCase = true)
+            } ||
+            report.practicedPhrases.any { phrase ->
+                phrase.phrase.contains(needle, ignoreCase = true) ||
+                    phrase.userQuote.contains(needle, ignoreCase = true)
+            }
+    }
+}
+
 @Composable
 fun WordsScreen(
     vm: MuralViewModel,
     onPracticeDeck: (TopicDeck) -> Unit = {},
+    selectedSection: WordsSection? = null,
+    onSelectSection: ((WordsSection) -> Unit)? = null,
 ) {
     var search by rememberSaveable { mutableStateOf("") }
+    var localSection by rememberSaveable { mutableStateOf(WordsSection.TOPIC_DECKS) }
+    val currentSection = selectedSection ?: localSection
+    val selectSection: (WordsSection) -> Unit = { section ->
+        localSection = section
+        onSelectSection?.invoke(section)
+    }
     var activeDeckTitle by rememberSaveable { mutableStateOf<String?>(null) }
     var activeDeckCards by remember { mutableStateOf<List<SentenceCard>?>(null) }
     var activePracticeDeck by remember { mutableStateOf<TopicDeck?>(null) }
@@ -344,18 +401,11 @@ fun WordsScreen(
 
     val now = System.currentTimeMillis()
     val allDecks = vm.topicDecks
-    val filteredDecks = allDecks.filter { deck ->
-        search.isBlank() ||
-            deck.topic.contains(search, ignoreCase = true) ||
-            deck.cards.any {
-                it.frontText.contains(search, ignoreCase = true) ||
-                    it.backText.contains(search, ignoreCase = true) ||
-                    it.explanation.contains(search, ignoreCase = true)
-            }
-    }
+    val filteredDecks = filterTopicDecks(allDecks, search)
     val languageCards = vm.activeLanguageSentenceCards
     val dueCards = languageCards.filter { it.isDue(now) }.sortedBy { it.nextReviewDate }
     val reports = vm.activeLanguageSessionReports
+    val filteredReports = filterSessionReports(reports, search)
     val progressSummary = vm.learningProgressSummary
 
     LazyColumn(
@@ -452,146 +502,194 @@ fun WordsScreen(
         }
 
         item {
-            MuralSearchField(search, { search = it.take(80) }, "Search topics, Arabic, or English sentences")
+            MuralSearchField(
+                value = search,
+                onValueChange = { search = it.take(80) },
+                placeholder = when (currentSection) {
+                    WordsSection.TOPIC_DECKS -> "Search topics, Arabic, or English sentences"
+                    WordsSection.SESSION_REPORTS -> "Search session reports, mistakes, or wins"
+                },
+            )
         }
 
-        // Topic Decks list
-        if (filteredDecks.isNotEmpty()) {
-            item {
-                Text(
-                    "TOPIC DECKS",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MuralColors.Secondary,
-                    modifier = Modifier.padding(top = 6.dp).semantics { heading() },
-                )
-            }
-            itemsIndexed(filteredDecks, key = { _, deck -> deck.topic }) { index, deck ->
-                TopicDeckCard(
-                    deck = deck,
-                    colorIndex = index,
-                    practiceEnabled = !vm.isRunning,
-                    onClick = {
-                        val dueInDeck = deck.cards.filter { it.isDue(now) }
-                        val orderedCards = if (dueInDeck.isNotEmpty()) {
-                            dueInDeck + deck.cards.filterNot { it.isDue(now) }
-                        } else {
-                            deck.cards
-                        }
-                        activeDeckTitle = deck.topic
-                        activeDeckCards = orderedCards
-                        activePracticeDeck = deck
-                    },
-                    onPracticeInCall = { onPracticeDeck(deck) },
-                    onDelete = { deckToDelete = deck },
-                )
-            }
-        } else {
-            item {
-                Surface(shape = RoundedCornerShape(28.dp), color = MuralColors.Sage, modifier = Modifier.testTag("words-empty-state")) {
-                    Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        MuralIcon(MuralSymbol.Leaf, Modifier.size(34.dp), color = MuralColors.Secondary)
+        item {
+            WordsSectionToggle(
+                selected = currentSection,
+                topicDeckCount = filteredDecks.size,
+                sessionReportCount = filteredReports.size,
+                onSelect = selectSection,
+            )
+        }
+
+        when (currentSection) {
+            WordsSection.TOPIC_DECKS -> {
+                if (filteredDecks.isNotEmpty()) {
+                    item {
                         Text(
-                            if (search.isBlank()) "No sentence decks yet." else "No matching sentence decks.",
-                            style = MaterialTheme.typography.headlineMedium,
-                        )
-                        Text(
-                            if (search.isBlank()) {
-                                "Finish a live voice conversation to get a Post-Session Mistake Report and automatically build SM-2 sentence flashcard decks by topic."
-                            } else {
-                                "Try another topic, translation, or target sentence."
-                            },
+                            "TOPIC DECKS",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MuralColors.Secondary,
+                            modifier = Modifier.padding(top = 6.dp).semantics { heading() },
                         )
                     }
-                }
-            }
-        }
-
-        // Recent Session Reports
-        if (reports.isNotEmpty()) {
-            item {
-                Text(
-                    "RECENT SESSION REPORTS",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MuralColors.Secondary,
-                    modifier = Modifier.padding(top = 10.dp).semantics { heading() },
-                )
-            }
-            items(reports, key = { it.id }) { report ->
-                Surface(
-                    Modifier.fillMaxWidth().testTag("session-report-item-${report.id}").clickable(role = Role.Button) {
-                        vm.openSessionReport(report)
-                    },
-                    shape = RoundedCornerShape(20.dp),
-                    color = MuralColors.Surface,
-                ) {
-                    Column(
-                        Modifier.padding(18.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    itemsIndexed(filteredDecks, key = { _, deck -> deck.topic }) { index, deck ->
+                        TopicDeckCard(
+                            deck = deck,
+                            colorIndex = index,
+                            practiceEnabled = !vm.isRunning,
+                            onClick = {
+                                val dueInDeck = deck.cards.filter { it.isDue(now) }
+                                val orderedCards = if (dueInDeck.isNotEmpty()) {
+                                    dueInDeck + deck.cards.filterNot { it.isDue(now) }
+                                } else {
+                                    deck.cards
+                                }
+                                activeDeckTitle = deck.topic
+                                activeDeckCards = orderedCards
+                                activePracticeDeck = deck
+                            },
+                            onPracticeInCall = { onPracticeDeck(deck) },
+                            onDelete = { deckToDelete = deck },
+                        )
+                    }
+                } else {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(28.dp),
+                            color = MuralColors.Sage,
+                            modifier = Modifier.fillMaxWidth().testTag("words-empty-state"),
                         ) {
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                MuralIcon(MuralSymbol.Leaf, Modifier.size(34.dp), color = MuralColors.Secondary)
                                 Text(
-                                    report.topic,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
+                                    if (search.isBlank()) "No sentence decks yet." else "No matching sentence decks.",
+                                    style = MaterialTheme.typography.headlineMedium,
                                 )
                                 Text(
-                                    "${formatEpochMillis(report.date)} · ${report.durationMinutes} min",
-                                    style = MaterialTheme.typography.bodySmall,
+                                    if (search.isBlank()) {
+                                        "Finish a live voice conversation to get a Post-Session Mistake Report and automatically build SM-2 sentence flashcard decks by topic."
+                                    } else {
+                                        "Try another topic, translation, or target sentence."
+                                    },
                                     color = MuralColors.Secondary,
                                 )
                             }
-                            MuralIcon(MuralSymbol.ChevronRight, Modifier.size(18.dp), color = MuralColors.Secondary)
                         }
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    }
+                }
+            }
+
+            WordsSection.SESSION_REPORTS -> {
+                if (filteredReports.isNotEmpty()) {
+                    item {
+                        Text(
+                            "RECENT SESSION REPORTS",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MuralColors.Secondary,
+                            modifier = Modifier.padding(top = 6.dp).semantics { heading() },
+                        )
+                    }
+                    items(filteredReports, key = { it.id }) { report ->
+                        Surface(
+                            Modifier.fillMaxWidth().testTag("session-report-item-${report.id}").clickable(role = Role.Button) {
+                                vm.openSessionReport(report)
+                            },
+                            shape = RoundedCornerShape(20.dp),
+                            color = MuralColors.Surface,
                         ) {
-                            Row(
-                                Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                            Column(
+                                Modifier.padding(18.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = if (report.mistakeCount > 0) MuralColors.Peach else MuralColors.Sage,
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                                 ) {
-                                    Text(
-                                        "${report.mistakeCount} ${if (report.mistakeCount == 1) "fix" else "fixes"}",
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MuralColors.Ink,
-                                    )
-                                }
-                                if (report.practicedPhrases.isNotEmpty()) {
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = Color(0xFFE7F6EC),
-                                    ) {
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Text(
-                                            "${report.practicedPhrases.size} used",
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = Color(0xFF14532D),
+                                            report.topic,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            "${formatEpochMillis(report.date)} · ${report.durationMinutes} min",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MuralColors.Secondary,
                                         )
                                     }
+                                    MuralIcon(MuralSymbol.ChevronRight, Modifier.size(18.dp), color = MuralColors.Secondary)
+                                }
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Row(
+                                        Modifier.weight(1f),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Surface(
+                                            shape = CircleShape,
+                                            color = if (report.mistakeCount > 0) MuralColors.Peach else MuralColors.Sage,
+                                        ) {
+                                            Text(
+                                                "${report.mistakeCount} ${if (report.mistakeCount == 1) "fix" else "fixes"}",
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MuralColors.Ink,
+                                            )
+                                        }
+                                        if (report.practicedPhrases.isNotEmpty()) {
+                                            Surface(
+                                                shape = CircleShape,
+                                                color = Color(0xFFE7F6EC),
+                                            ) {
+                                                Text(
+                                                    "${report.practicedPhrases.size} used",
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = Color(0xFF14532D),
+                                                )
+                                            }
+                                        }
+                                    }
+                                    SoftRoundButton(
+                                        symbol = MuralSymbol.Trash,
+                                        description = "Delete flashcards for ${report.topic}",
+                                        onClick = { reportToDelete = report },
+                                        diameter = 36.dp,
+                                        tint = Color(0xFFFDECE9),
+                                        modifier = Modifier.testTag("delete-session-cards-${report.sessionID}"),
+                                    )
                                 }
                             }
-                            SoftRoundButton(
-                                symbol = MuralSymbol.Trash,
-                                description = "Delete flashcards for ${report.topic}",
-                                onClick = { reportToDelete = report },
-                                diameter = 36.dp,
-                                tint = Color(0xFFFDECE9),
-                                modifier = Modifier.testTag("delete-session-cards-${report.sessionID}"),
-                            )
+                        }
+                    }
+                } else {
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(28.dp),
+                            color = MuralColors.Sage,
+                            modifier = Modifier.fillMaxWidth().testTag("session-reports-empty-state"),
+                        ) {
+                            Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                MuralIcon(MuralSymbol.Transcript, Modifier.size(34.dp), color = MuralColors.Secondary)
+                                Text(
+                                    if (search.isBlank()) "No session reports yet." else "No matching session reports.",
+                                    style = MaterialTheme.typography.headlineMedium,
+                                )
+                                Text(
+                                    if (search.isBlank()) {
+                                        "Finish a live voice conversation to get a Post-Session Mistake Report with your wins, corrections, and natural upgrades."
+                                    } else {
+                                        "Try another topic, mistake, correction, Arabic meaning, or win."
+                                    },
+                                    color = MuralColors.Secondary,
+                                )
+                            }
                         }
                     }
                 }
@@ -663,6 +761,96 @@ fun WordsScreen(
             },
             onDismiss = { reportToDelete = null },
         )
+    }
+}
+
+@Composable
+private fun WordsSectionToggle(
+    selected: WordsSection,
+    topicDeckCount: Int,
+    sessionReportCount: Int,
+    onSelect: (WordsSection) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().testTag("words-section-toggle"),
+        shape = CircleShape,
+        color = MuralColors.Surface,
+        border = BorderStroke(1.dp, MuralColors.Secondary.copy(alpha = 0.12f)),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(4.dp).selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            WordsSectionTabButton(
+                label = "Topic Decks",
+                count = topicDeckCount,
+                selected = selected == WordsSection.TOPIC_DECKS,
+                tag = "words-tab-topic-decks",
+                onClick = { onSelect(WordsSection.TOPIC_DECKS) },
+                modifier = Modifier.weight(1f),
+            )
+            WordsSectionTabButton(
+                label = "Session Reports",
+                count = sessionReportCount,
+                selected = selected == WordsSection.SESSION_REPORTS,
+                tag = "words-tab-session-reports",
+                onClick = { onSelect(WordsSection.SESSION_REPORTS) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun WordsSectionTabButton(
+    label: String,
+    count: Int,
+    selected: Boolean,
+    tag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .clip(CircleShape)
+            .testTag(tag)
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick),
+        shape = CircleShape,
+        color = if (selected) MuralColors.Peach else Color.Transparent,
+        border = if (selected) BorderStroke(1.dp, MuralColors.Orange.copy(alpha = 0.35f)) else null,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().heightIn(min = 46.dp).padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                ),
+                color = if (selected) MuralColors.Ink else MuralColors.Secondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Surface(
+                shape = CircleShape,
+                color = if (selected) MuralColors.Surface.copy(alpha = 0.85f) else MuralColors.SurfaceBright,
+            ) {
+                Text(
+                    text = count.toString(),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontFeatureSettings = "tnum",
+                    ),
+                    color = if (selected) MuralColors.Ink else MuralColors.Secondary,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
+        }
     }
 }
 
